@@ -50,11 +50,30 @@ tui_screen_attr arcan_face(const Face& face)
         | (attr & Attribute::Blink)     ? TUI_ATTR_BLINK     : 0
         | (attr & Attribute::Bold)      ? TUI_ATTR_BOLD      : 0
         | (attr & Attribute::Italic)    ? TUI_ATTR_ITALIC    : 0;
+
     struct tui_screen_attr screen_attr = {
         .fc = {face.fg.r, face.fg.g, face.fg.b},
         .bc = {face.bg.r, face.bg.g, face.bg.b},
-        .aflags = aflags
+        .aflags = aflags,
+				.custom_id = 0
     };
+
+		if (!face.fg.isRGB() && !face.bg.isRGB()){
+			screen_attr.aflags |= TUI_ATTR_COLOR_INDEXED;
+			if (face.fg.color == Color::Default){
+				screen_attr.fc[0] = TUI_COL_TEXT;
+			}
+			else {
+				screen_attr.fc[0] = TUI_COL_TBASE + face.fg.color - Color::Default;
+			}
+			if (face.bg.color == Color::Default){
+				screen_attr.bc[0] = TUI_COL_TEXT;
+			}
+			else {
+				screen_attr.bc[0] = TUI_COL_TBASE + face.bg.color - Color::Default;
+			}
+		}
+
     return screen_attr;
 }
 
@@ -98,9 +117,30 @@ tui_cbcfg ArcanUI::setup_callbacks()
 {
     struct tui_cbcfg cbcfg = {
         .tag = &m_state,
-        .input_utf8 = tui_input_utf8,
+				.query_label = NULL,
+ 				.input_label = NULL,
+ 				.input_alabel = NULL,
+				.input_mouse_motion = NULL,
+				.input_mouse_button = NULL,
+	      .input_utf8 = tui_input_utf8,
         .input_key = tui_input_key,
-        .resized = tui_resized
+	  		.input_misc = NULL,
+				.state = NULL,
+				.bchunk = NULL,
+				.vpaste = NULL,
+				.apaste = NULL,
+				.tick = NULL,
+				.utf8 = NULL,
+        .resized = tui_resized,
+				.reset = NULL,
+				.geohint = NULL,
+				.recolor = NULL,
+				.subwindow = NULL,
+				.substitute = NULL,
+				.resize = NULL,
+				.visibility = NULL,
+				.exec_state = NULL,
+				.cli_command = NULL
     };
     return cbcfg;
 }

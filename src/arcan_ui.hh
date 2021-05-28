@@ -21,7 +21,10 @@ extern "C"
 #define arcan_tui_ucs4utf8(...) arcan_tui_ucs4utf8(uint32_t, char dst[4])
 #define arcan_tui_ucs4utf8_s(...) arcan_tui_ucs4utf8_s(uint32_t, char dst[5])
 #define arcan_tui_utf8ucs4(...) arcan_tui_utf8ucs4(const char src[4], uint32_t* dst)
-#include <arcan/shmif/arcan_shmif.h>
+/* #include <arcan/shmif/arcan_shmif.h> */
+struct arcan_ioevent;
+typedef uint32_t shmif_pixel;
+typedef int16_t shmif_asample;
 #include <arcan/arcan_tui.h>
 #undef arcan_tui_ucs4utf8
 #undef arcan_tui_ucs4utf8_s
