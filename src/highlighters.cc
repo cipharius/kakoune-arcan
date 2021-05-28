@@ -1049,7 +1049,7 @@ private:
                 {
                     auto coord = it.coord();
                     Codepoint cp = utf8::read_codepoint(it, end);
-                    if (cp == '\t' or cp == ' ' or cp == '\n' or cp == 0xA0)
+                    if (cp == '\t' or cp == ' ' or cp == '\n' or cp == 0xA0 or cp == 0x202F)
                     {
                         if (coord != begin.coord())
                             atom_it = ++line.split(atom_it, coord);
@@ -1067,7 +1067,7 @@ private:
                             atom_it->replace(m_spc);
                         else if (cp == '\n')
                             atom_it->replace(m_lf);
-                        else if (cp == 0xA0)
+                        else if (cp == 0xA0 or cp == 0x202F)
                             atom_it->replace(m_nbsp);
                         atom_it->face = merge_faces(atom_it->face, whitespaceface);
                         break;
@@ -1082,11 +1082,12 @@ private:
 
 struct LineNumbersHighlighter : Highlighter
 {
-    LineNumbersHighlighter(bool relative, bool hl_cursor_line, String separator, int min_digits)
+    LineNumbersHighlighter(bool relative, bool hl_cursor_line, String separator, String cursor_separator, int min_digits)
       : Highlighter{HighlightPass::Move},
         m_relative{relative},
         m_hl_cursor_line{hl_cursor_line},
         m_separator{std::move(separator)},
+        m_cursor_separator{std::move(cursor_separator)},
         m_min_digits{min_digits} {}
 
     static std::unique_ptr<Highlighter> create(HighlighterParameters params, Highlighter*)
@@ -1094,6 +1095,7 @@ struct LineNumbersHighlighter : Highlighter
         static const ParameterDesc param_desc{
             { { "relative", { false, "" } },
               { "separator", { true, "" } },
+              { "cursor-separator", { true, "" } },
               { "min-digits", { true, "" } },
               { "hlcursor", { false, "" } } },
             ParameterDesc::Flags::None, 0, 0
@@ -1101,8 +1103,13 @@ struct LineNumbersHighlighter : Highlighter
         ParametersParser parser(params, param_desc);
 
         StringView separator = parser.get_switch("separator").value_or("│");
+        StringView cursor_separator = parser.get_switch("cursor-separator").value_or(separator);
+
         if (separator.length() > 10)
             throw runtime_error("separator length is limited to 10 bytes");
+
+        if (cursor_separator.column_length() != separator.column_length())
+            throw runtime_error("separator for active line should have the same length as 'separator'");
 
         int min_digits = parser.get_switch("min-digits").map(str_to_int).value_or(2);
         if (min_digits < 0)
@@ -1110,7 +1117,7 @@ struct LineNumbersHighlighter : Highlighter
         if (min_digits > 10)
             throw runtime_error("min digits is limited to 10");
 
-        return std::make_unique<LineNumbersHighlighter>((bool)parser.get_switch("relative"), (bool)parser.get_switch("hlcursor"), separator.str(), min_digits);
+        return std::make_unique<LineNumbersHighlighter>((bool)parser.get_switch("relative"), (bool)parser.get_switch("hlcursor"), separator.str(), cursor_separator.str(), min_digits);
     }
 
 private:
@@ -1141,8 +1148,12 @@ private:
             snprintf(buffer, 16, format, std::abs(line_to_format));
             const auto atom_face = last_line == current_line ? face_wrapped :
                 ((m_hl_cursor_line and is_cursor_line) ? face_absolute : face);
+
+            const auto& separator = is_cursor_line && last_line != current_line
+                                    ? m_cursor_separator : m_separator;
+
             line.insert(line.begin(), {buffer, atom_face});
-            line.insert(line.begin() + 1, {m_separator, face});
+            line.insert(line.begin() + 1, {separator, face});
 
             last_line = current_line;
         }
@@ -1174,6 +1185,7 @@ private:
     const bool m_relative;
     const bool m_hl_cursor_line;
     const String m_separator;
+    const String m_cursor_separator;
     const int m_min_digits;
 };
 
@@ -1523,19 +1535,34 @@ private:
 BufferCoord& get_first(RangeAndString& r) { return std::get<0>(r).first; }
 BufferCoord& get_last(RangeAndString& r) { return std::get<0>(r).last; }
 
+bool option_element_compare(RangeAndString const& lhs, RangeAndString const& rhs)
+{
+    return std::get<0>(lhs).first == std::get<0>(rhs).first ?
+        std::get<0>(lhs).last < std::get<0>(rhs).last
+      : std::get<0>(lhs).first < std::get<0>(rhs).first;
+}
+
 void option_list_postprocess(Vector<RangeAndString, MemoryDomain::Options>& opt)
 {
-    std::sort(opt.begin(), opt.end(),
-              [](auto& lhs, auto& rhs) {
-        return std::get<0>(lhs).first == std::get<0>(rhs).first ?
-            std::get<0>(lhs).last < std::get<0>(rhs).last
-          : std::get<0>(lhs).first < std::get<0>(rhs).first;
-    });
+    std::sort(opt.begin(), opt.end(), option_element_compare);
 }
 
 void option_update(RangeAndStringList& opt, const Context& context)
 {
     update_ranges(context.buffer(), opt.prefix, opt.list);
+}
+
+bool option_add_from_strings(Vector<RangeAndString, MemoryDomain::Options>& opt, ConstArrayView<String> strs)
+{
+    auto vec = option_from_strings(Meta::Type<Vector<RangeAndString, MemoryDomain::Options>>{}, strs);
+    if (vec.empty())
+        return false;
+    auto middle = opt.insert(opt.end(),
+                             std::make_move_iterator(vec.begin()),
+                             std::make_move_iterator(vec.end()));
+    std::sort(middle, opt.end(), option_element_compare);
+    std::inplace_merge(opt.begin(), middle, opt.end(), option_element_compare);
+    return true;
 }
 
 struct RangesHighlighter : OptionBasedHighlighter<RangeAndStringList, RangesHighlighter>
@@ -2257,7 +2284,7 @@ void register_highlighters()
         "number-lines",
         { LineNumbersHighlighter::create,
           "Display line numbers \n"
-          "Parameters: -relative, -hlcursor, -separator <separator text>, -min-digits <cols>\n" } });
+          "Parameters: -relative, -hlcursor, -separator <separator text>, -cursor-separator <separator text>, -min-digits <cols>\n" } });
     registry.insert({
         "show-matching",
         { create_matching_char_highlighter,

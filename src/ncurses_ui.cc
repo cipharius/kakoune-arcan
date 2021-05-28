@@ -327,7 +327,7 @@ static void signal_handler(int)
 
 NCursesUI::NCursesUI()
     : m_cursor{CursorMode::Buffer, {}},
-      m_stdin_watcher{STDIN_FILENO, FdEvents::Read,
+      m_stdin_watcher{STDIN_FILENO, FdEvents::Read, EventMode::Urgent,
                       [this](FDWatcher&, FdEvents, EventMode) {
         if (not m_on_key)
             return;
@@ -412,6 +412,8 @@ void NCursesUI::set_terminal_mode() const
     fputs("\033=", stdout);
     // force enable report focus events
     fputs("\033[?1004h", stdout);
+    // request CSI u style key reporting
+    fputs("\033[>4;1m", stdout);
     fflush(stdout);
 }
 
@@ -420,6 +422,7 @@ void NCursesUI::restore_terminal_mode() const
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_original_termios);
     fputs("\033>", stdout);
     fputs("\033[?1004l", stdout);
+    fputs("\033[>4;0m", stdout);
     fflush(stdout);
 }
 
@@ -474,7 +477,17 @@ void NCursesUI::draw(const DisplayBuffer& display_buffer,
     while (line_index < dim.line + line_offset)
     {
         m_window.move_cursor(line_index++);
-        m_window.draw(m_palette, DisplayAtom("~"), face);
+        if (m_padding_fill)
+        {
+            ColumnCount column_index = 0;
+            while (column_index < dim.column)
+            {
+                m_window.draw(m_palette, m_padding_char, face);
+                column_index += m_padding_char.length();
+            }
+        }
+        else
+            m_window.draw(m_palette, m_padding_char, face);
     }
 
     m_dirty = true;
@@ -657,7 +670,18 @@ Optional<Key> NCursesUI::get_next_key()
        return Key{utf8::codepoint(CharIterator{c}, Sentinel{})};
     };
 
-    auto parse_csi = [this, &convert]() -> Optional<Key> {
+    auto parse_mask = [](int mask) {
+        Key::Modifiers mod = Key::Modifiers::None;
+        if (mask & 1)
+            mod |= Key::Modifiers::Shift;
+        if (mask & 2)
+            mod |= Key::Modifiers::Alt;
+        if (mask & 4)
+            mod |= Key::Modifiers::Control;
+        return mod;
+    };
+
+    auto parse_csi = [this, &convert, &parse_mask]() -> Optional<Key> {
         auto next_char = [] { return get_char().value_or((unsigned char)0xff); };
         int params[16] = {};
         auto c = next_char();
@@ -679,17 +703,6 @@ Optional<Key> NCursesUI::get_next_key()
         if (c != '$' and (c < 0x40 or c > 0x7e))
             return {};
 
-        auto parse_mask = [](int mask) {
-            Key::Modifiers mod = Key::Modifiers::None;
-            if (mask & 1)
-                mod |= Key::Modifiers::Shift;
-            if (mask & 2)
-                mod |= Key::Modifiers::Alt;
-            if (mask & 4)
-                mod |= Key::Modifiers::Control;
-            return mod;
-        };
-
         auto mouse_button = [this](Key::Modifiers mod, Key::MouseButton button, Codepoint coord, bool release) {
             auto mask = 1 << (int)button;
             if (not release)
@@ -710,7 +723,10 @@ Optional<Key> NCursesUI::get_next_key()
                     (Codepoint)((down ? 1 : -1) * m_wheel_scroll_amount)};
         };
 
-        auto masked_key = [&](Codepoint key) { return Key{parse_mask(std::max(params[1] - 1, 0)), key}; };
+        auto masked_key = [&](Codepoint key) {
+            int mask = std::max(params[1] - 1, 0);
+            return Key{parse_mask(mask), key};
+        };
 
         switch (c)
         {
@@ -725,6 +741,7 @@ Optional<Key> NCursesUI::get_next_key()
         case 'B': return masked_key(Key::Down);
         case 'C': return masked_key(Key::Right);
         case 'D': return masked_key(Key::Left);
+        case 'E': return masked_key('5');        // Numeric keypad 5
         case 'F': return masked_key(Key::End);   // PC/xterm style
         case 'H': return masked_key(Key::Home);  // PC/xterm style
         case 'P': return masked_key(Key::F1);
@@ -791,19 +808,47 @@ Optional<Key> NCursesUI::get_next_key()
         return {};
     };
 
-    auto parse_ss3 = []() -> Optional<Key> {
-        switch (get_char().value_or((unsigned char)0xff))
+    auto parse_ss3 = [&parse_mask]() -> Optional<Key> {
+        int raw_mask = 0;
+        char code = '0';
+        do {
+            raw_mask = raw_mask * 10 + (code - '0');
+            code = get_char().value_or((unsigned char)0xff);
+        } while (code >= '0' and code <= '9');
+        Key::Modifiers mod = parse_mask(std::max(raw_mask - 1, 0));
+
+        switch (code)
         {
-        case 'A': return Key{Key::Up};
-        case 'B': return Key{Key::Down};
-        case 'C': return Key{Key::Right};
-        case 'D': return Key{Key::Left};
-        case 'F': return Key{Key::End};
-        case 'H': return Key{Key::Home};
-        case 'P': return Key{Key::F1};
-        case 'Q': return Key{Key::F2};
-        case 'R': return Key{Key::F3};
-        case 'S': return Key{Key::F4};
+        case ' ': return Key{mod, ' '};
+        case 'A': return Key{mod, Key::Up};
+        case 'B': return Key{mod, Key::Down};
+        case 'C': return Key{mod, Key::Right};
+        case 'D': return Key{mod, Key::Left};
+        case 'F': return Key{mod, Key::End};
+        case 'H': return Key{mod, Key::Home};
+        case 'I': return Key{mod, Key::Tab};
+        case 'M': return Key{mod, Key::Return};
+        case 'P': return Key{mod, Key::F1};
+        case 'Q': return Key{mod, Key::F2};
+        case 'R': return Key{mod, Key::F3};
+        case 'S': return Key{mod, Key::F4};
+        case 'X': return Key{mod, '='};
+        case 'j': return Key{mod, '*'};
+        case 'k': return Key{mod, '+'};
+        case 'l': return Key{mod, ','};
+        case 'm': return Key{mod, '-'};
+        case 'n': return Key{mod, '.'};
+        case 'o': return Key{mod, '/'};
+        case 'p': return Key{mod, '0'};
+        case 'q': return Key{mod, '1'};
+        case 'r': return Key{mod, '2'};
+        case 's': return Key{mod, '3'};
+        case 't': return Key{mod, '4'};
+        case 'u': return Key{mod, '5'};
+        case 'v': return Key{mod, '6'};
+        case 'w': return Key{mod, '7'};
+        case 'x': return Key{mod, '8'};
+        case 'y': return Key{mod, '9'};
         default: return {};
         }
     };
@@ -1360,6 +1405,24 @@ void NCursesUI::set_ui_options(const Options& options)
         auto wheel_scroll_amount_it = options.find("ncurses_wheel_scroll_amount"_sv);
         m_wheel_scroll_amount = wheel_scroll_amount_it != options.end() ?
             str_to_int_ifp(wheel_scroll_amount_it->value).value_or(3) : 3;
+    }
+
+    {
+        auto it = options.find("ncurses_padding_char"_sv);
+        if (it == options.end())
+            // Defaults to tilde.
+            m_padding_char = DisplayAtom("~");
+        else if (it->value.column_length() < 1)
+            // Do not allow empty string, use space instead.
+            m_padding_char = DisplayAtom(" ");
+        else
+            m_padding_char = DisplayAtom(it->value);
+    }
+
+    {
+        auto it = options.find("ncurses_padding_fill"_sv);
+        m_padding_fill = it != options.end() and
+            (it->value == "yes" or it->value == "true");
     }
 }
 

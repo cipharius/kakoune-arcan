@@ -134,7 +134,7 @@ define-command -hidden c-family-indent-on-closing-curly-brace %[
 
 define-command -hidden c-family-insert-on-closing-curly-brace %[
     # add a semicolon after a closing brace if part of a class, union or struct definition
-    try %[ execute-keys -itersel -draft hm<a-x>B<a-x><a-k>\A\h*(class|struct|union|enum)<ret> '<a-;>;i;<esc>' ]
+    try %[ execute-keys -itersel -draft hm<a-x>B<a-x> <a-K>\A[^\n]+\)\h*(\{|$)<ret> <a-k>\A\h*(class|struct|union|enum)<ret> '<a-;>;i;<esc>' ]
 ]
 
 define-command -hidden c-family-insert-on-newline %[ evaluate-commands -itersel -draft %[
@@ -199,11 +199,8 @@ evaluate-commands %sh{
             add-highlighter shared/$ft regions
             add-highlighter shared/$ft/code default-region group
             add-highlighter shared/$ft/string region %{$maybe_at(?<!')(?<!'\\\\)"} %{(?<!\\\\)(?:\\\\\\\\)*"} fill string
-            add-highlighter shared/$ft/raw_string region -match-capture %{R"([^(]*)\\(} %{\\)([^")]*)"} fill string
-            add-highlighter shared/$ft/javadoc region /\*\*[^/] \*/ fill documentation
-            add-highlighter shared/$ft/qtdoc region /\*! \*/ fill documentation
-            add-highlighter shared/$ft/inline_doc region /// $ fill documentation
-            add-highlighter shared/$ft/inline_qtdoc region //! $ fill documentation
+            add-highlighter shared/$ft/documentation_comment region /\*(\*[^/]|!) \*/ fill documentation
+            add-highlighter shared/$ft/line_documentation_comment region //[/!] $ fill documentation
             add-highlighter shared/$ft/comment region /\\* \\*/ fill comment
             add-highlighter shared/$ft/line_comment region // (?<!\\\\)(?=\\n) fill comment
             add-highlighter shared/$ft/disabled region -recurse "#\\h*if(?:def)?" ^\\h*?#\\h*if\\h+(?:0|FALSE)\\b "#\\h*(?:else|elif|endif)" fill comment
@@ -286,6 +283,9 @@ evaluate-commands %sh{
 }
 
 # c++ specific
+
+# raw strings
+add-highlighter shared/cpp/raw_string region -match-capture %{R"([^(]*)\(} %{\)([^")]*)"} fill string
 
 # integer literals
 add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b[1-9]('?\d+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
@@ -387,7 +387,7 @@ define-command -hidden c-family-insert-include-guards %{
     evaluate-commands %sh{
         case "${kak_opt_c_include_guard_style}" in
             ifdef)
-                echo 'execute-keys ggi<c-r>%<ret><esc>ggxs\.<ret>c_<esc><space>A_INCLUDED<esc>ggxyppI#ifndef<space><esc>jI#define<space><esc>jI#endif<space>//<space><esc>O<esc>'
+                echo 'execute-keys ggi<c-r>%<ret><esc>ggI/<esc>xs^.*/<ret>dxs\.<ret>c_<esc><space>A_INCLUDED<esc>ggxyppI#ifndef<space><esc>jI#define<space><esc>jI#endif<space>//<space><esc>O<esc>'
                 ;;
             pragma)
                 echo 'execute-keys ggi#pragma<space>once<esc>'
@@ -419,7 +419,7 @@ define-command -hidden c-family-alternative-file %{
                         /*) altname="${alt_dir}/${file_noext}.${ext}" ;;
                         *) altname="${dir}/${alt_dir}/${file_noext}.${ext}" ;;
                         esac
-                        if [ -f ${altname} ]; then
+                        if [ -f "${altname}" ]; then
                             printf 'edit %%{%s}\n' "${altname}"
                             exit
                         fi
@@ -433,7 +433,7 @@ define-command -hidden c-family-alternative-file %{
                         /*) altname="${alt_dir}/${file_noext}.${ext}" ;;
                         *) altname="${dir}/${alt_dir}/${file_noext}.${ext}" ;;
                         esac
-                        if [ -f ${altname} ]; then
+                        if [ -f "${altname}" ]; then
                             printf 'edit %%{%s}\n' "${altname}"
                             exit
                         fi

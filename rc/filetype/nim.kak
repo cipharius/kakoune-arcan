@@ -16,6 +16,7 @@ hook global WinSetOption filetype=nim %{
 
     set-option window static_words %opt{nim_static_words}
 
+    hook window InsertChar \n -group nim-insert nim-insert-on-new-line
     hook window InsertChar \n -group nim-indent nim-indent-on-new-line
     # cleanup trailing whitespaces on current line insert end
     hook window ModeChange pop:insert:.* -group nim-trim-indent %{ try %{ exec -draft <semicolon> <a-x> s ^\h+$ <ret> d } }
@@ -51,8 +52,10 @@ evaluate-commands %sh{
     # Grammar
     opchars='[=+-/<>@$~&%|!?^.:\\*]'
     opnocol='[=+-/<>@$~&%|!?^.\\*]'
-    suffix="('?([iIuU](8|16|32|64)|[fF](32|64)?|[dDuU]|[fF]))?"
-    floatsuffix="('?([fF](32|64)?|[dD]|[fF]))?"
+    letter='A-Za-z\u000080-\u10FFFF'
+    customsuffix="'[${letter}](_?[${letter}0-9])*"
+    suffix="(${customsuffix}|[iIuU](8|16|32|64)|[fF](32|64)?|[dDuU])?"
+    floatsuffix="(${customsuffix}|[fF](32|64)?|[dD])?"
     hexdigit='[0-9a-fA-F]'
     octdigit='[0-7]'
     bindigit='[01]'
@@ -108,10 +111,15 @@ add-highlighter shared/nim/code/ regex %{'(\\([rcnlftvabe\\"']|0*[12]?\d?\d|x[0-
 # Commands
 # ‾‾‾‾‾‾‾‾
 
-def -hidden nim-indent-on-new-line %{
-    eval -draft -itersel %{
+define-command -hidden nim-insert-on-new-line %{
+    evaluate-commands -draft -itersel %{
         # copy '#' comment prefix and following white spaces
         try %{ exec -draft k <a-x> s ^\h*#\h* <ret> y jgh P }
+    }
+}
+
+define-command -hidden nim-indent-on-new-line %{
+    evaluate-commands -draft -itersel %{
         # preserve previous line indent
         try %{ exec -draft <semicolon> K <a-&> }
         # cleanup trailing whitespaces from previous line

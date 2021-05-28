@@ -133,7 +133,7 @@ Buffer* create_fifo_buffer(String name, int fd, Buffer::Flags flags, bool scroll
     struct FifoWatcher : FDWatcher
     {
         FifoWatcher(int fd, Buffer& buffer, bool scroll)
-            : FDWatcher(fd, FdEvents::Read,
+            : FDWatcher(fd, FdEvents::Read, EventMode::Normal,
                         [](FDWatcher& watcher, FdEvents, EventMode mode) {
                             if (mode == EventMode::Normal)
                                 static_cast<FifoWatcher&>(watcher).read_fifo();
@@ -157,7 +157,7 @@ Buffer* create_fifo_buffer(String name, int fd, Buffer::Flags flags, bool scroll
             // if we read data slower than it arrives in the fifo, limiting the
             // iteration number allows us to go back go back to the event loop and
             // handle other events sources (such as input)
-            constexpr size_t max_loop = 16;
+            constexpr size_t max_loop = 1024;
             bool closed = false;
             size_t loop = 0;
             char data[buffer_size];

@@ -393,7 +393,10 @@ void edit(const ParametersParser& parser, Context& context, const ShellContext&)
 
         buffer->flags() &= ~Buffer::Flags::NoHooks;
         if (parser.get_switch("readonly"))
+        {
             buffer->flags() |= Buffer::Flags::ReadOnly;
+            buffer->options()["readonly"].set(true);
+        }
     }
 
     Buffer* current_buffer = context.has_buffer() ? &context.buffer() : nullptr;
@@ -1445,7 +1448,9 @@ const CommandDesc debug_cmd = {
             }
             write_to_debug_buffer({});
             write_to_debug_buffer(format("  Total: {}", total));
-            #if defined(__GLIBC__) || defined(__CYGWIN__)
+            #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+            write_to_debug_buffer(format("  Malloced: {}", mallinfo2().uordblks));
+            #elif defined(__GLIBC__) || defined(__CYGWIN__)
             write_to_debug_buffer(format("  Malloced: {}", mallinfo().uordblks));
             #endif
         }
