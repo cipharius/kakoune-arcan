@@ -90,8 +90,10 @@ else
     	$(error "pkg-config not found in PATH")
     endif
 
-    LIBS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --libs ncursesw)
+    LIBS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --libs ncursesw arcan-shmif arcan-shmif-tui)
     NCURSES_CFLAGS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --cflags ncursesw)
+    ARCAN_CFLAGS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --cflags arcan-shmif arcan-shmif-tui)
+    ARCAN_CFLAGS += -std=c++2a -pthread
     LDFLAGS += -rdynamic
 endif
 
@@ -118,6 +120,8 @@ kak$(suffix) : $(objects) .version.o
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MD -MP -MF $(addprefix ., $(<:.cc=$(suffix).d)) -c -o $@ $<
 
 .ncurses_ui$(suffix).o: CPPFLAGS += $(NCURSES_CFLAGS)
+
+.arcan_ui$(suffix).o: CXXFLAGS += $(ARCAN_CFLAGS)
 
 .version.o: .version.cc
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<

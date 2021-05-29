@@ -14,6 +14,7 @@
 #include "insert_completer.hh"
 #include "json_ui.hh"
 #include "ncurses_ui.hh"
+#include "arcan_ui.hh"
 #include "option_types.hh"
 #include "parameters_parser.hh"
 #include "ranges.hh"
@@ -574,6 +575,7 @@ enum class UIType
     NCurses,
     Json,
     Dummy,
+    Arcan
 };
 
 UIType parse_ui_type(StringView ui_name)
@@ -581,6 +583,7 @@ UIType parse_ui_type(StringView ui_name)
     if (ui_name == "ncurses") return UIType::NCurses;
     if (ui_name == "json") return UIType::Json;
     if (ui_name == "dummy") return UIType::Dummy;
+    if (ui_name == "arcan") return UIType::Arcan;
 
     throw parameter_error(format("error: unknown ui type: '{}'", ui_name));
 }
@@ -613,6 +616,7 @@ std::unique_ptr<UserInterface> make_ui(UIType ui_type)
         case UIType::NCurses: return std::make_unique<NCursesUI>();
         case UIType::Json: return std::make_unique<JsonUI>();
         case UIType::Dummy: return std::make_unique<DummyUI>();
+        case UIType::Arcan: return std::make_unique<ArcanUI>();
     }
     throw logic_error{};
 }
@@ -1055,7 +1059,7 @@ int main(int argc, char* argv[])
                    { "f", { true,  "filter: for each file, select the entire buffer and execute the given keys" } },
                    { "i", { true, "backup the files on which a filter is applied using the given suffix" } },
                    { "q", { false, "in filter mode, be quiet about errors applying keys" } },
-                   { "ui", { true, "set the type of user interface to use (ncurses, dummy, or json)" } },
+                   { "ui", { true, "set the type of user interface to use (ncurses, dummy, json, or arcan)" } },
                    { "l", { false, "list existing sessions" } },
                    { "clear", { false, "clear dead sessions" } },
                    { "debug", { true, "initial debug option value" } },
