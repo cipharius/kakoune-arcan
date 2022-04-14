@@ -208,9 +208,10 @@ String read_file(StringView filename, bool text)
 MappedFile::MappedFile(StringView filename)
     : data{nullptr}
 {
-    fd = open(filename.zstr(), O_RDONLY | O_NONBLOCK);
+    int fd = open(filename.zstr(), O_RDONLY | O_NONBLOCK);
     if (fd == -1)
         throw file_access_error(filename, strerror(errno));
+    auto close_fd = on_scope_end([&] { close(fd); });
 
     fstat(fd, &st);
     if (S_ISDIR(st.st_mode))
@@ -226,12 +227,8 @@ MappedFile::MappedFile(StringView filename)
 
 MappedFile::~MappedFile()
 {
-    if (fd != -1)
-    {
-        if (data != nullptr)
-            munmap((void*)data, st.st_size);
-        close(fd);
-    }
+    if (data != nullptr)
+        munmap((void*)data, st.st_size);
 }
 
 MappedFile::operator StringView() const
@@ -245,6 +242,13 @@ bool file_exists(StringView filename)
 {
     struct stat st;
     return stat(filename.zstr(), &st) == 0;
+}
+
+bool regular_file_exists(StringView filename)
+{
+    struct stat st;
+    return stat(filename.zstr(), &st) == 0 and
+           (st.st_mode & S_IFMT) == S_IFREG;
 }
 
 void write(int fd, StringView data)
@@ -271,43 +275,6 @@ void write_to_file(StringView filename, StringView data)
     auto close_fd = on_scope_end([fd]{ close(fd); });
     write(fd, data);
 }
-
-struct BufferedWriter
-{
-    BufferedWriter(int fd)
-      : m_fd{fd}, m_exception_count{std::uncaught_exceptions()} {}
-
-    ~BufferedWriter() noexcept(false)
-    {
-        if (m_pos != 0 and m_exception_count == std::uncaught_exceptions())
-            Kakoune::write(m_fd, {m_buffer, m_pos});
-    }
-
-    void write(StringView data)
-    {
-        while (not data.empty())
-        {
-            const ByteCount length = data.length();
-            const ByteCount write_len = std::min(length, size - m_pos);
-            memcpy(m_buffer + (int)m_pos, data.data(), (int)write_len);
-            m_pos += write_len;
-            if (m_pos == size)
-            {
-                Kakoune::write(m_fd, {m_buffer, size});
-                m_pos = 0;
-            }
-            data = data.substr(write_len);
-        }
-    }
-
-private:
-    static constexpr ByteCount size = 4096;
-    int m_fd;
-    int m_exception_count;
-    ByteCount m_pos = 0;
-    char m_buffer[(int)size];
-};
-
 
 void write_buffer_to_fd(Buffer& buffer, int fd)
 {
@@ -627,7 +594,7 @@ FsStatus get_fs_status(StringView filename)
 String get_kak_binary_path()
 {
     char buffer[2048];
-#if defined(__linux__) or defined(__CYGWIN__)
+#if defined(__linux__) or defined(__CYGWIN__) or defined(__gnu_hurd__)
     ssize_t res = readlink("/proc/self/exe", buffer, 2048);
     kak_assert(res != -1);
     buffer[res] = '\0';

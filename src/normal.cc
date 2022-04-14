@@ -1,7 +1,5 @@
 #include "normal.hh"
 
-#include <functional>
-
 #include "buffer.hh"
 #include "buffer_manager.hh"
 #include "buffer_utils.hh"
@@ -30,8 +28,6 @@
 
 namespace Kakoune
 {
-
-using namespace std::placeholders;
 
 enum class SelectMode
 {
@@ -281,7 +277,6 @@ void goto_commands(Context& context, NormalParams params)
                 if (not target)
                 {
                     throw runtime_error("no last buffer");
-                    break;
                 }
                 context.push_jump();
                 context.change_buffer(*target);
@@ -289,30 +284,39 @@ void goto_commands(Context& context, NormalParams params)
             }
             case 'f':
             {
-                auto filename = content(buffer, context.selections().main());
                 static constexpr char forbidden[] = { '\'', '\\', '\0' };
-                if (any_of(filename, [](char c){ return contains(forbidden, c); }))
-                    return;
+                const auto& paths_opt = context.options()["path"].get<Vector<String, MemoryDomain::Options>>();
+                const auto paths = context.selections() | transform([&](const auto& sel) {
+                    auto filename = content(buffer, sel);
+                    if (any_of(filename, [](char c){ return contains(forbidden, c); }))
+                        throw runtime_error(format("filename contains invalid characters: '{}'", filename));
 
-                auto paths = context.options()["path"].get<Vector<String, MemoryDomain::Options>>();
-                const StringView buffer_dir = split_path(buffer.name()).first;
-                String path = find_file(filename, buffer_dir, paths);
-                if (path.empty())
-                    throw runtime_error(format("unable to find file '{}'", filename));
+                    const StringView buffer_dir = split_path(buffer.name()).first;
+                    String path = find_file(filename, buffer_dir, paths_opt);
+                    if (path.empty())
+                        throw runtime_error(format("unable to find file '{}'", filename));
 
-                Buffer* buffer = BufferManager::instance().get_buffer_ifp(path);
-                if (not buffer)
-                {
-                    buffer = open_file_buffer(path, context.hooks_disabled() ?
-                                                      Buffer::Flags::NoHooks
-                                                    : Buffer::Flags::None);
-                    buffer->flags() &= ~Buffer::Flags::NoHooks;
+                    return path;
+                });
+
+                Buffer* buffer_main = nullptr;
+                for (auto&& [i, path] : paths | enumerate()) {
+                    Buffer* buffer = BufferManager::instance().get_buffer_ifp(path);
+                    if (not buffer)
+                    {
+                        buffer = open_file_buffer(path, context.hooks_disabled() ?
+                                                          Buffer::Flags::NoHooks
+                                                        : Buffer::Flags::None);
+                        buffer->flags() &= ~Buffer::Flags::NoHooks;
+                    }
+
+                    if (i == context.selections().main_index())
+                        buffer_main = buffer;
                 }
-
-                if (buffer != &context.buffer())
+                if (buffer_main and buffer_main != &context.buffer())
                 {
                     context.push_jump();
-                    context.change_buffer(*buffer);
+                    context.change_buffer(*buffer_main);
                 }
                 break;
             }
@@ -327,6 +331,8 @@ void goto_commands(Context& context, NormalParams params)
                 select_coord<mode>(buffer, *pos, context.selections());
                 break;
             }
+            default:
+                throw runtime_error("key not mapped");
             }
         }, (mode == SelectMode::Extend ? "goto (extend to)" : "goto"),
         build_autoinfo_for_mapping(context, KeymapMode::Goto,
@@ -363,7 +369,7 @@ void view_commands(Context& context, NormalParams params)
 
         const BufferCoord cursor = context.selections().main().cursor();
         Window& window = context.window();
-        switch (to_lower(*cp))
+        switch (*cp)
         {
         case 'v':
         case 'c':
@@ -391,6 +397,8 @@ void view_commands(Context& context, NormalParams params)
         case 'l':
             window.scroll( std::max<ColumnCount>(1, count));
             break;
+        default:
+            throw runtime_error("key not mapped");
         }
     }, lock ? "view (lock)" : "view",
     build_autoinfo_for_mapping(context, KeymapMode::View,
@@ -413,14 +421,10 @@ void replace_with_char(Context& context, NormalParams)
             return;
         ScopedEdition edition(context);
         Buffer& buffer = context.buffer();
-        SelectionList& selections = context.selections();
-        Vector<String> strings;
-        for (auto& sel : selections)
-        {
+        context.selections().for_each([&](size_t index, Selection& sel) {
             CharCount count = char_length(buffer, sel);
-            strings.emplace_back(*cp, count);
-        }
-        selections.insert(strings, InsertMode::Replace);
+            replace(buffer, sel, String{*cp, count});
+        });
     }, "replace with char", "enter char to replace with\n");
 }
 
@@ -437,19 +441,15 @@ void for_each_codepoint(Context& context, NormalParams)
 
     ScopedEdition edition(context);
     Buffer& buffer = context.buffer();
-    SelectionList& selections = context.selections();
-    Vector<String> strings;
-    for (auto& sel : selections)
-    {
+
+    context.selections().for_each([&](size_t index, Selection& sel) {
         String str;
         for (auto begin = Utf8It{buffer.iterator_at(sel.min()), buffer},
                   end = Utf8It{buffer.iterator_at(sel.max()), buffer}+1;
              begin != end; ++begin)
             utf8::dump(std::back_inserter(str), func(*begin));
-
-        strings.push_back(std::move(str));
-    }
-    selections.insert(strings, InsertMode::Replace);
+        replace(buffer, sel, str);
+    });
 }
 
 void command(const Context& context, EnvVarMap env_vars, char reg = 0)
@@ -578,10 +578,6 @@ void pipe(Context& context, NormalParams params)
                     const auto end = changes_tracker.get_new_coord_tolerant(sel.max());
 
                     String in = buffer.string(beg, buffer.char_next(end));
-                    const bool insert_eol = in.back() != '\n';
-                    if (insert_eol)
-                        in += '\n';
-
                     // Needed in case we read selections inside the cmdline
                     context.selections_write_only().set({keep_direction(Selection{beg, end}, sel)}, 0);
 
@@ -589,12 +585,9 @@ void pipe(Context& context, NormalParams params)
                         cmdline, context, in,
                         ShellManager::Flags::WaitForStdout).first;
 
-                    if (insert_eol)
-                    {
-                        in.resize(in.length()-1, 0);
-                        if (not out.empty() and out.back() == '\n')
-                            out.resize(out.length()-1, 0);
-                    }
+                    if (in.back() != '\n' and not out.empty() and out.back() == '\n')
+                        out.resize(out.length()-1, 0);
+
                     auto new_end = apply_diff(buffer, beg, in, out);
                     if (new_end != beg)
                         new_sels.push_back(keep_direction({beg, buffer.char_prev(new_end), std::move(sel.captures())}, sel));
@@ -621,43 +614,6 @@ void pipe(Context& context, NormalParams params)
                 }
                 selections.set_main_index(old_main);
             }
-        });
-}
-
-template<InsertMode mode>
-void insert_output(Context& context, NormalParams params)
-{
-    const char* prompt = mode == InsertMode::Insert ? "insert-output:" : "append-output:";
-    String default_command = context.main_sel_register_value(params.reg ? params.reg : '|').str();
-
-    context.input_handler().prompt(
-        prompt, {}, default_command, context.faces()["Prompt"],
-        PromptFlags::DropHistoryEntriesWithBlankPrefix, '|',
-        shell_complete,
-        [default_command](StringView cmdline, PromptEvent event, Context& context)
-        {
-            if (event != PromptEvent::Validate)
-                return;
-
-            if (cmdline.empty())
-                cmdline = default_command;
-
-            if (cmdline.empty())
-                return;
-
-            ScopedEdition edition(context);
-            auto& selections = context.selections();
-            const size_t old_main = selections.main_index();
-
-            auto ins = selections | transform([&, i=0](auto& sel) mutable {
-                selections.set_main_index(i++);
-                return ShellManager::instance().eval(
-                    cmdline, context, content(context.buffer(), sel),
-                    ShellManager::Flags::WaitForStdout).first;
-            }) | gather<Vector>();
-
-            selections.set_main_index(old_main);
-            selections.insert(ins, mode);
         });
 }
 
@@ -693,18 +649,28 @@ void change(Context& context, NormalParams params)
     enter_insert_mode<InsertMode::Replace>(context, params);
 }
 
-InsertMode adapt_for_linewise(InsertMode mode)
+enum class PasteMode
+{
+    Append,
+    Insert,
+    Replace
+};
+
+BufferCoord paste_pos(Buffer& buffer, const Selection& sel, PasteMode mode, bool linewise)
 {
     switch (mode)
     {
-        case InsertMode::Append: return InsertMode::InsertAtNextLineBegin;
-        case InsertMode::Insert: return InsertMode::InsertAtLineBegin;
-        case InsertMode::Replace: return InsertMode::Replace;
-        default: return InsertMode::Insert;
+        case PasteMode::Append:
+            return linewise ? std::min(buffer.line_count(), sel.max().line+1) : buffer.char_next(sel.max());
+        case PasteMode::Insert:
+            return linewise ? sel.min().line : sel.min();
+        default:
+            kak_assert(false);
+            return {};
     }
 }
 
-template<InsertMode mode>
+template<PasteMode mode>
 void paste(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
@@ -712,18 +678,24 @@ void paste(Context& context, NormalParams params)
     const bool linewise = any_of(strings, [](StringView str) {
         return not str.empty() and str.back() == '\n';
     });
-    const auto effective_mode = linewise ? adapt_for_linewise(mode) : mode;
 
+    auto& buffer = context.buffer();
     ScopedEdition edition(context);
-    context.selections().insert(strings, effective_mode);
+    context.selections().for_each([&](size_t index, Selection& sel) {
+        auto& str = strings[std::min(strings.size()-1, index)];
+        if (mode == PasteMode::Replace)
+            replace(buffer, sel, str);
+        else
+            insert(buffer, sel, paste_pos(buffer, sel, mode, linewise), str);
+    });
 }
 
-template<InsertMode mode>
+template<PasteMode mode>
 void paste_all(Context& context, NormalParams params)
 {
     const char reg = params.reg ? params.reg : '"';
     auto strings = RegisterManager::instance()[reg].get(context);
-    InsertMode effective_mode = mode;
+    bool linewise = false;
     String all;
     Vector<ByteCount> offsets;
     for (auto& str : strings)
@@ -732,34 +704,82 @@ void paste_all(Context& context, NormalParams params)
             continue;
 
         if (str.back() == '\n')
-            effective_mode = adapt_for_linewise(mode);
+            linewise = true;
         all += str;
         offsets.push_back(all.length());
     }
 
-    Vector<BufferCoord> insert_pos;
+    if (offsets.empty())
+        throw runtime_error("nothing to paste");
+
+    Buffer& buffer = context.buffer();
+    Vector<Selection> result;
     auto& selections = context.selections();
     {
         ScopedEdition edition(context);
-        selections.insert(all, effective_mode, &insert_pos);
-    }
+        selections.for_each([&](size_t, const Selection& sel) {
+            auto range = (mode == PasteMode::Replace) ?
+                buffer.replace(sel.min(), buffer.char_next(sel.max()), all)
+              : buffer.insert(paste_pos(buffer, sel, mode, linewise), all);
 
-    const Buffer& buffer = context.buffer();
-    Vector<Selection> result;
-    for (auto& ins_pos : insert_pos)
-    {
-        ByteCount pos_offset = 0;
-        BufferCoord pos = ins_pos;
-        for (auto offset : offsets)
-        {
-            BufferCoord end = buffer.advance(pos, offset - pos_offset - 1);
-            result.emplace_back(pos, end);
-            pos = buffer.next(end);
-            pos_offset = offset;
-        }
+            ByteCount pos_offset = 0;
+            BufferCoord pos = range.begin;
+            for (auto offset : offsets)
+            {
+                BufferCoord end = buffer.advance(pos, offset - pos_offset - 1);
+                result.emplace_back(pos, end);
+                pos = buffer.next(end);
+                pos_offset = offset;
+            }
+        });
     }
-    if (not result.empty())
-        selections = std::move(result);
+    selections = std::move(result);
+}
+
+template<PasteMode mode>
+void insert_output(Context& context, NormalParams params)
+{
+    const char* prompt = mode == PasteMode::Insert ? "insert-output:" : "append-output:";
+    String default_command = context.main_sel_register_value(params.reg ? params.reg : '|').str();
+
+    context.input_handler().prompt(
+        prompt, {}, default_command, context.faces()["Prompt"],
+        PromptFlags::DropHistoryEntriesWithBlankPrefix, '|',
+        shell_complete,
+        [default_command](StringView cmdline, PromptEvent event, Context& context)
+        {
+            if (event != PromptEvent::Validate)
+                return;
+
+            if (cmdline.empty())
+                cmdline = default_command;
+
+            if (cmdline.empty())
+                return;
+
+            ScopedEdition edition(context);
+            auto& selections = context.selections();
+            auto& buffer = context.buffer();
+            const size_t old_main = selections.main_index();
+            Vector<BufferRange> ins_range;
+
+            selections.for_each([&](size_t index, Selection& sel) {
+                selections.set_main_index(index);
+                auto [out, status] = ShellManager::instance().eval(
+                    cmdline, context, content(context.buffer(), sel),
+                    ShellManager::Flags::WaitForStdout);
+
+                auto range = insert(buffer, sel, paste_pos(buffer, sel, mode, false), out);
+                ins_range.push_back(range);
+            });
+
+            selections.set(ins_range | transform([&buffer](auto& range) {
+                if (range.empty())
+                    return Selection{range.begin, range.end};
+                return Selection{range.begin,
+                                 buffer.char_prev(range.end)};
+            }) | gather<Vector>(), old_main);
+        });
 }
 
 constexpr RegexCompileFlags direction_flags(RegexMode mode)
@@ -966,7 +986,7 @@ void use_selection_as_search_pattern(Context& context, NormalParams params)
     const char reg = to_lower(params.reg ? params.reg : '/');
 
     context.print_status({
-        format("register '{}' set to '{}'", reg, fix_atom_text(pattern)),
+        format("register '{}' set to '{}'", reg, pattern),
         context.faces()["Information"] });
 
     RegisterManager::instance()[reg].set(context, {pattern});
@@ -1080,8 +1100,9 @@ void join_lines_select_spaces(Context& context, NormalParams)
     if (selections.empty())
         return;
     context.selections_write_only() = std::move(selections);
+    context.selections().merge_consecutive();
     ScopedEdition edition(context);
-    context.selections().insert(" "_str, InsertMode::Replace);
+    context.selections().replace({" "_str});
 }
 
 void join_lines(Context& context, NormalParams params)
@@ -1184,23 +1205,16 @@ void indent(Context& context, NormalParams params)
     String indent = indent_width == 0 ? String{'\t', count} : String{' ', indent_width * count};
 
     auto& buffer = context.buffer();
-    Vector<Selection> sels;
     LineCount last_line = 0;
     for (auto& sel : context.selections())
     {
         for (auto line = std::max(last_line, sel.min().line); line < sel.max().line+1; ++line)
         {
             if (indent_empty or buffer[line].length() > 1)
-                sels.emplace_back(line, line);
+                buffer.insert(line, indent);
         }
         // avoid reindenting the same line if multiple selections are on it
         last_line = sel.max().line+1;
-    }
-    if (not sels.empty())
-    {
-        ScopedEdition edition(context);
-        SelectionList selections{buffer, std::move(sels)};
-        selections.insert(indent, InsertMode::Insert);
     }
 }
 
@@ -1214,8 +1228,7 @@ void deindent(Context& context, NormalParams params)
         indent_width = tabstop;
     indent_width = indent_width * count;
 
-    const auto& buffer = context.buffer();
-    Vector<Selection> sels;
+    auto& buffer = context.buffer();
     LineCount last_line = 0;
     for (auto& sel : context.selections())
     {
@@ -1234,24 +1247,18 @@ void deindent(Context& context, NormalParams params)
                 else
                 {
                     if (deindent_incomplete and width != 0)
-                        sels.emplace_back(line, BufferCoord{line, column-1});
+                        buffer.erase(line, BufferCoord{line, column});
                     break;
                 }
                 if (width >= indent_width)
                 {
-                    sels.emplace_back(line, BufferCoord{line, column});
+                    buffer.erase(line, BufferCoord{line, column+1});
                     break;
                 }
             }
         }
         // avoid reindenting the same line if multiple selections are on it
         last_line = sel.max().line + 1;
-    }
-    if (not sels.empty())
-    {
-        ScopedEdition edition(context);
-        SelectionList selections{context.buffer(), std::move(sels)};
-        selections.erase();
     }
 }
 
@@ -1283,7 +1290,7 @@ void select_object(Context& context, NormalParams params)
             { alt('w'), select_word<WORD> },
             { 's', select_sentence },
             { 'p', select_paragraph },
-            { ' ', select_whitespaces },
+            { Key::Space, select_whitespaces },
             { 'i', select_indent },
             { 'n', select_number },
             { 'u', select_argument },
@@ -1291,7 +1298,15 @@ void select_object(Context& context, NormalParams params)
         auto obj_it = find(selectors | transform(&ObjectType::key), key).base();
         if (obj_it != std::end(selectors))
             return select_and_set_last<mode>(
-                context, std::bind(obj_it->func, _1, _2, count, flags));
+                context, [=](Context& context, Selection& sel) { return obj_it->func(context, sel, count, flags); });
+
+        static constexpr auto regex_selector = [=](StringView open, StringView close, int count) {
+            return [open=Regex{open, RegexCompileFlags::Backward},
+                    close=Regex{close, RegexCompileFlags::Backward},
+                    count](Context& context, Selection& sel) {
+                return select_surrounding(context, sel, open, close, count, flags);
+            };
+        };
 
         if (key == 'c')
         {
@@ -1312,17 +1327,13 @@ void select_object(Context& context, NormalParams params)
 
                     struct error : runtime_error { error(size_t) : runtime_error{"desc parsing failed, expected <open>,<close>"} {} };
 
-                    auto params = cmdline | split<StringView>(',', '\\') |
-                        transform(unescape<',', '\\'>) | static_gather<error, 2>();
-
+                    auto params = cmdline | split<StringView>(',', '\\')
+                                          | transform(unescape<',', '\\'>)
+                                          | static_gather<error, 2>();
                     if (params[0].empty() or params[1].empty())
                         throw error{0};
 
-                    select_and_set_last<mode>(
-                        context, std::bind(select_surrounding, _1, _2,
-                                           Regex{params[0], RegexCompileFlags::Backward},
-                                           Regex{params[1], RegexCompileFlags::Backward},
-                                           count, flags));
+                    select_and_set_last<mode>(context, regex_selector(params[0], params[1], count));
                 });
             return;
         }
@@ -1339,10 +1350,10 @@ void select_object(Context& context, NormalParams params)
             return;
         }
 
-        static constexpr struct SurroundingPair
+        static constexpr struct
         {
-            char opening;
-            char closing;
+            char open;
+            char close;
             char name;
         } surrounding_pairs[] = {
             { '(', ')', 'b' },
@@ -1353,34 +1364,21 @@ void select_object(Context& context, NormalParams params)
             { '\'', '\'', 'q' },
             { '`', '`', 'g' },
         };
-        auto pair_it = find_if(surrounding_pairs,
-                               [key](const SurroundingPair& s) {
-                                   return key == s.opening or key == s.closing or
-                                          (s.name != 0 and key == s.name);
-                               });
-        if (pair_it != std::end(surrounding_pairs))
+        if (auto it = find_if(surrounding_pairs, [key](auto s) { return key == s.open or key == s.close or key == s.name; });
+            it != std::end(surrounding_pairs))
             return select_and_set_last<mode>(
-                context, std::bind(select_surrounding, _1, _2,
-                                   Regex{format("\\Q{}", pair_it->opening), RegexCompileFlags::Backward},
-                                   Regex{format("\\Q{}", pair_it->closing), RegexCompileFlags::Backward},
-                                   count, flags));
+                context, regex_selector(format("\\Q{}", it->open), format("\\Q{}", it->close), count));
 
-        if (not key.codepoint())
-            return;
-
-        const Codepoint cp = *key.codepoint();
-        if (is_punctuation(cp, {}))
+        if (auto cp = key.codepoint(); cp and is_punctuation(*cp, {}))
         {
-            auto re = Regex{"\\Q" + to_string(cp), RegexCompileFlags::Backward};
-            return select_and_set_last<mode>(
-                context, std::bind(select_surrounding, _1, _2,
-                                   re, re, count, flags));
+            auto re = "\\Q" + to_string(*cp);
+            return select_and_set_last<mode>(context, regex_selector(re, re, count));
         }
     }, get_title(),
     build_autoinfo_for_mapping(context, KeymapMode::Object,
         {{{'b','(',')'}, "parenthesis block"},
-         {{'B','{','}'}, "braces block"},
-         {{'r','[',']'}, "brackets block"},
+         {{'B','{','}'}, "brace block"},
+         {{'r','[',']'}, "bracket block"},
          {{'a','<','>'}, "angle block"},
          {{'"','Q'},     "double quote string"},
          {{'\'','q'},    "single quote string"},
@@ -1389,7 +1387,7 @@ void select_object(Context& context, NormalParams params)
          {{alt('w')},    "WORD"},
          {{'s'},         "sentence"},
          {{'p'},         "paragraph"},
-         {{' '},         "whitespaces"},
+         {{Key::Space},  "whitespaces"},
          {{'i'},         "indent"},
          {{'u'},         "argument"},
          {{'n'},         "number"},
@@ -1494,7 +1492,7 @@ void rotate_selections_content(Context& context, NormalParams params)
             main = main < new_beg ? end - (new_beg - main) : it + (main - new_beg);
         it = end;
     }
-    selections.insert(strings, InsertMode::Replace);
+    selections.replace(strings);
     selections.set_main_index(main - strings.begin());
 }
 
@@ -1526,11 +1524,10 @@ void select_to_next_char(Context& context, NormalParams params)
         constexpr auto new_flags = flags & SelectFlags::Extend ? SelectMode::Extend
                                                                : SelectMode::Replace;
         select_and_set_last<new_flags>(
-            context,
-            std::bind(flags & SelectFlags::Reverse ? select_to_reverse
-                                                   : select_to,
-                      _1, _2, *cp, params.count,
-                      flags & SelectFlags::Inclusive));
+            context, [cp=*cp, count=params.count] (auto& context, auto& sel) {
+                auto& func = flags & SelectFlags::Reverse ? select_to_reverse : select_to;
+                return func(context, sel, cp, count, flags & SelectFlags::Inclusive);
+            });
     }, get_title(), "enter char to select to");
 }
 
@@ -1712,7 +1709,7 @@ void tabs_to_spaces(Context& context, NormalParams params)
         }
     }
     if (not tabs.empty())
-        SelectionList{ buffer, std::move(tabs) }.insert(spaces, InsertMode::Replace);
+        SelectionList{ buffer, std::move(tabs) }.replace(spaces);
 }
 
 void spaces_to_tabs(Context& context, NormalParams params)
@@ -1748,7 +1745,7 @@ void spaces_to_tabs(Context& context, NormalParams params)
         }
     }
     if (not spaces.empty())
-        SelectionList{ buffer, std::move(spaces) }.insert("\t"_str, InsertMode::Replace);
+        SelectionList{ buffer, std::move(spaces) }.replace("\t"_str);
 }
 
 void trim_selections(Context& context, NormalParams)
@@ -2245,12 +2242,12 @@ static constexpr HashMap<Key, NormalCmd, MemoryDomain::Undefined, KeymapBackend>
     { {'V'}, {"move view (locked)", view_commands<true>} },
 
     { {'y'}, {"yank selected text", yank} },
-    { {'p'}, {"paste after selected text", repeated<paste<InsertMode::Append>>} },
-    { {'P'}, {"paste before selected text", repeated<paste<InsertMode::Insert>>} },
-    { {alt('p')}, {"paste every yanked selection after selected text", paste_all<InsertMode::Append>} },
-    { {alt('P')}, {"paste every yanked selection before selected text", paste_all<InsertMode::Insert>} },
-    { {'R'}, {"replace selected text with yanked text", paste<InsertMode::Replace>} },
-    { {alt('R')}, {"replace selected text with every yanked text", paste_all<InsertMode::Replace>} },
+    { {'p'}, {"paste after selected text", repeated<paste<PasteMode::Append>>} },
+    { {'P'}, {"paste before selected text", repeated<paste<PasteMode::Insert>>} },
+    { {alt('p')}, {"paste every yanked selection after selected text", paste_all<PasteMode::Append>} },
+    { {alt('P')}, {"paste every yanked selection before selected text", paste_all<PasteMode::Insert>} },
+    { {'R'}, {"replace selected text with yanked text", paste<PasteMode::Replace>} },
+    { {alt('R')}, {"replace selected text with every yanked text", paste_all<PasteMode::Replace>} },
 
     { {'s'}, {"select regex matches in selected text", select_regex} },
     { {'S'}, {"split selected text on regex matches", split_regex} },
@@ -2265,11 +2262,11 @@ static constexpr HashMap<Key, NormalCmd, MemoryDomain::Undefined, KeymapBackend>
     { {':'}, {"enter command prompt", command} },
     { {'|'}, {"pipe each selection through filter and replace with output", pipe<true>} },
     { {alt('|')}, {"pipe each selection through command and ignore output", pipe<false>} },
-    { {'!'}, {"insert command output", insert_output<InsertMode::Insert>} },
-    { {alt('!')}, {"append command output", insert_output<InsertMode::Append>} },
+    { {'!'}, {"insert command output", insert_output<PasteMode::Insert>} },
+    { {alt('!')}, {"append command output", insert_output<PasteMode::Append>} },
 
-    { {' '}, {"remove all selections except main", keep_selection} },
-    { {alt(' ')}, {"remove main selection", remove_selection} },
+    { {Key::Space}, {"remove all selections except main", keep_selection} },
+    { {alt(Key::Space)}, {"remove main selection", remove_selection} },
     { {';'}, {"reduce selections to their cursor", clear_selections} },
     { {alt(';')}, {"swap selections cursor and anchor", flip_selections} },
     { {alt(':')}, {"ensure selection cursor is after anchor", ensure_forward} },
@@ -2345,7 +2342,8 @@ static constexpr HashMap<Key, NormalCmd, MemoryDomain::Undefined, KeymapBackend>
     { {alt('>')}, {"indent, including empty lines", indent<true>} },
     { {alt('<')}, {"deindent, not including incomplete indent", deindent<false>} },
 
-    { {/*ctrl('i')*/Key::Tab}, {"jump forward in jump list",jump<Forward>} }, // until we can distinguish tab a ctrl('i')
+    { {ctrl('i')}, {"jump forward in jump list",jump<Forward>} },
+    { {Key::Tab}, {"jump forward in jump list",jump<Forward>} }, // legacy terminals encode <tab> / <c-i> the same way
     { {ctrl('o')}, {"jump backward in jump list", jump<Backward>} },
     { {ctrl('s')}, {"push current selections in jump list", push_selections} },
 

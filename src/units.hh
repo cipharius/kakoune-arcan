@@ -5,6 +5,7 @@
 #include "hash.hh"
 
 #include <type_traits>
+#include <compare>
 
 namespace Kakoune
 {
@@ -87,24 +88,8 @@ public:
     { return lhs.m_value == rhs.m_value; }
 
     [[gnu::always_inline]]
-    constexpr friend bool operator!=(RealType lhs, RealType rhs)
-    { return lhs.m_value != rhs.m_value; }
-
-    [[gnu::always_inline]]
-    constexpr friend bool operator<(RealType lhs, RealType rhs)
-    { return lhs.m_value < rhs.m_value; }
-
-    [[gnu::always_inline]]
-    constexpr friend bool operator<=(RealType lhs, RealType rhs)
-    { return lhs.m_value <= rhs.m_value; }
-
-    [[gnu::always_inline]]
-    constexpr friend bool operator>(RealType lhs, RealType rhs)
-    { return lhs.m_value > rhs.m_value; }
-
-    [[gnu::always_inline]]
-    constexpr friend bool operator>=(RealType lhs, RealType rhs)
-    { return lhs.m_value >= rhs.m_value; }
+    constexpr friend auto operator<=>(RealType lhs, RealType rhs)
+    { return lhs.m_value <=> rhs.m_value; }
 
     [[gnu::always_inline]]
     constexpr bool operator!() const

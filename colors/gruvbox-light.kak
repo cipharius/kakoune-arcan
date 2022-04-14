@@ -1,28 +1,28 @@
-# gruvbox theme
+# gruvbox light theme
 
 evaluate-commands %sh{
     gray="rgb:928374"
-    red="rgb:fb4934"
-    green="rgb:b8bb26"
-    yellow="rgb:fabd2f"
-    blue="rgb:83a598"
-    purple="rgb:d3869b"
-    aqua="rgb:8ec07c"
-    orange="rgb:fe8019"
+    red="rgb:9d0006"
+    green="rgb:79740e"
+    yellow="rgb:b57614"
+    blue="rgb:876678"
+    purple="rgb:8f3f71"
+    aqua="rgb:427b58"
+    orange="rgb:af3a03"
 
-    bg="rgb:282828"
-    bg_alpha="rgba:282828a0"
-    bg1="rgb:3c3836"
-    bg2="rgb:504945"
-    bg3="rgb:665c54"
-    bg4="rgb:7c6f64"
+    bg="rgb:fbf1c7"
+    bg_alpha="rgba:fbf1c7a0"
+    bg1="rgb:ebdbb2"
+    bg2="rgb:d5c4a1"
+    bg3="rgb:bdae93"
+    bg4="rgb:a89984"
 
-    fg="rgb:ebdbb2"
-    fg_alpha="rgba:ebdbb2a0"
-    fg0="rgb:fbf1c7"
-    fg2="rgb:d5c4a1"
-    fg3="rgb:bdae93"
-    fg4="rgb:a89984"
+    fg="rgb:3c3836"
+    fg_alpha="rgba:3c3836a0"
+    fg0="rgb:282828"
+    fg2="rgb:504945"
+    fg3="rgb:665c54"
+    fg4="rgb:7c6f64"
 
     echo "
         # Code highlighting
@@ -64,6 +64,8 @@ evaluate-commands %sh{
         face global MenuInfo           ${bg}
         face global Information        ${bg},${fg}
         face global Error              ${bg},${red}
+        face global DiagnosticError    ${red}
+        face global DiagnosticWarning  ${yellow}
         face global StatusLine         ${fg},${bg}
         face global StatusLineMode     ${yellow}+b
         face global StatusLineInfo     ${purple}

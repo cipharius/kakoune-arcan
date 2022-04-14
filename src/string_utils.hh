@@ -6,6 +6,7 @@
 #include "vector.hh"
 #include "ranges.hh"
 #include "optional.hh"
+#include "utils.hh"
 
 namespace Kakoune
 {
@@ -94,9 +95,9 @@ struct WrapView
 
 inline auto wrap_at(ColumnCount max_width)
 {
-    return make_view_factory([=](StringView text) {
+    return ViewFactory{[=](StringView text) {
         return WrapView{text, max_width};
-    });
+    }};
 }
 
 int str_to_int(StringView str); // throws on error
@@ -135,13 +136,11 @@ decltype(auto) to_string(const StronglyTypedNumber<RealType, ValueType>& val)
 namespace detail
 {
 
-template<typename T> constexpr bool is_string = std::is_convertible<T, StringView>::value;
-
-template<typename T, class = std::enable_if_t<not is_string<T>>>
-decltype(auto) format_param(const T& val) { return to_string(val); }
-
-template<typename T, class = std::enable_if_t<is_string<T>>>
+template<typename T> requires std::is_convertible_v<T, StringView> 
 StringView format_param(const T& val) { return val; }
+
+template<typename T> requires (not std::is_convertible_v<T, StringView>) 
+decltype(auto) format_param(const T& val) { return to_string(val); }
 
 }
 
@@ -159,6 +158,14 @@ template<typename... Types>
 StringView format_to(ArrayView<char> buffer, StringView fmt, Types&&... params)
 {
     return format_to(buffer, fmt, ArrayView<const StringView>{detail::format_param(std::forward<Types>(params))...});
+}
+
+void format_with(FunctionRef<void (StringView)> append, StringView fmt, ArrayView<const StringView> params);
+
+template<typename... Types>
+void format_with(FunctionRef<void (StringView)> append, StringView fmt, Types&&... params)
+{
+    return format_with(append, fmt, ArrayView<const StringView>{detail::format_param(std::forward<Types>(params))...});
 }
 
 String double_up(StringView s, StringView characters);

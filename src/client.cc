@@ -47,7 +47,11 @@ Client::Client(std::unique_ptr<UserInterface>&& ui,
     m_ui->set_ui_options(m_window->options()["ui_options"].get<UserInterface::Options>());
     m_ui->set_on_key([this](Key key) {
         if (key == ctrl('c'))
+        {
+            auto prev_handler = set_signal_handler(SIGINT, SIG_IGN);
             killpg(getpgrp(), SIGINT);
+            set_signal_handler(SIGINT, prev_handler);
+        }
         else if (key.modifiers & Key::Modifiers::Resize)
         {
             m_window->set_dimensions(key.coord());
@@ -103,8 +107,7 @@ bool Client::process_pending_inputs()
         catch (Kakoune::runtime_error& error)
         {
             write_to_debug_buffer(format("Error: {}", error.what()));
-            context().print_status({ fix_atom_text(error.what().str()),
-                                     context().faces()["Error"] });
+            context().print_status({error.what().str(), context().faces()["Error"] });
             context().hooks().run_hook(Hook::RuntimeError, error.what(), context());
         }
     }
@@ -140,6 +143,8 @@ String generate_context_info(const Context& context)
         s += "[fifo]";
     if (context.buffer().flags() & Buffer::Flags::Debug)
         s += "[debug]";
+    if (context.buffer().flags() & Buffer::Flags::ReadOnly)
+        s += "[readonly]";
     return s;
 }
 

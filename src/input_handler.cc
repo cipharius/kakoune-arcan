@@ -575,12 +575,12 @@ public:
         const Face cursor_face = m_faces["StatusCursor"];
 
         if (m_cursor_pos == str.char_length())
-            return DisplayLine{{ { fix_atom_text(str.substr(m_display_pos, width-1)), line_face },
+            return DisplayLine{{ { str.substr(m_display_pos, width-1).str(), line_face },
                                  { " "_str, cursor_face} } };
         else
-            return DisplayLine({ { fix_atom_text(str.substr(m_display_pos, m_cursor_pos - m_display_pos)), line_face },
-                                 { fix_atom_text(str.substr(m_cursor_pos,1)), cursor_face },
-                                 { fix_atom_text(str.substr(m_cursor_pos+1, width - m_cursor_pos + m_display_pos - 1)), line_face } });
+            return DisplayLine({ { str.substr(m_display_pos, m_cursor_pos - m_display_pos).str(), line_face },
+                                 { str.substr(m_cursor_pos,1).str(), cursor_face },
+                                 { str.substr(m_cursor_pos+1, width - m_cursor_pos + m_display_pos - 1).str(), line_face } });
     }
 private:
     CharCount  m_cursor_pos = 0;
@@ -1003,7 +1003,7 @@ public:
         }
         else
         {
-            if (key == ' ' and
+            if (key == Key::Space and
                 not (m_completions.flags & Completions::Flags::Quoted) and // if token is quoted, this space does not end it
                 can_auto_insert_completion())
                 m_line_editor.insert_from(line.char_count_to(m_completions.start),
@@ -1443,8 +1443,9 @@ public:
         auto main_index = context().selections().main_index();
         return {AtomList{ { "insert", context().faces()["StatusLineMode"] },
                           { " ", context().faces()["StatusLine"] },
-                          { format( "{} sels ({})", num_sel, main_index + 1),
-                             context().faces()["StatusLineInfo"] } }};
+                          { num_sel == 1 ? format("{} sel", num_sel)
+                              : format("{} sels ({})", num_sel, main_index + 1),
+                            context().faces()["StatusLineInfo"] } }};
     }
 
     KeymapMode keymap_mode() const override { return KeymapMode::Insert; }
@@ -1467,13 +1468,19 @@ private:
 
     void insert(ConstArrayView<String> strings)
     {
-        context().selections().insert(strings, InsertMode::InsertCursor);
+        context().selections().for_each([strings, &buffer=context().buffer()]
+                                        (size_t index, Selection& sel) {
+            Kakoune::insert(buffer, sel, sel.cursor(), strings[std::min(strings.size()-1, index)]);
+        });
     }
 
     void insert(Codepoint key)
     {
         String str{key};
-        context().selections().insert(str, InsertMode::InsertCursor);
+        context().selections().for_each([&buffer=context().buffer(), &str]
+                                        (size_t index, Selection& sel) {
+            Kakoune::insert(buffer, sel, sel.cursor(), str);
+        });
         context().hooks().run_hook(Hook::InsertChar, str, context());
     }
 
@@ -1551,10 +1558,6 @@ private:
                 sel.set(pos);
             }
             break;
-        case InsertMode::InsertAtNextLineBegin:
-        case InsertMode::InsertCursor:
-             kak_assert(false); // invalid for interactive insert
-             break;
         }
         selections.check_invariant();
         buffer.check_invariant();
@@ -1695,14 +1698,9 @@ InputHandler::ScopedForceNormal::~ScopedForceNormal()
 
     if (m_mode == m_handler.m_mode_stack.back().get())
         m_handler.pop_mode(m_mode);
-    else
-    {
-        auto it = find_if(m_handler.m_mode_stack,
-                          [this](const RefPtr<InputMode>& m)
-                          { return m.get() == m_mode; });
-        kak_assert(it != m_handler.m_mode_stack.end());
+    else if (auto it = find(m_handler.m_mode_stack, m_mode);
+             it != m_handler.m_mode_stack.end())
         m_handler.m_mode_stack.erase(it);
-    }
 }
 
 static bool is_valid(Key key)

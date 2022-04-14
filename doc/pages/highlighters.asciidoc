@@ -65,6 +65,10 @@ highlighter is replaced with the new one.
         specify a string to separate the line numbers column from
         the rest of the buffer (default is '|')
 
+    *-cursor-separator* <separator text>:::
+        identical to *-separator* but applies only to the line of the cursor
+        (default is the same value passed to *-separator*)
+
     *-min-digits* <num>:::
         always reserve room for at least *num* digits,
         so text doesn't jump around as lines are added or removed
@@ -109,7 +113,7 @@ add-highlighter window/ regex //\h*(TODO:)[^\n]* 0:cyan 1:yellow,red
 
     capture_id can be either the capture number, or its name if a
     named capture is used in the regex (See
-    <<regex#Groups, `:doc regex Groups`>>)
+    <<regex#groups, `:doc regex groups`>>)
 
 *dynregex* <expression> <capture_id>:<face> ...::
     similar to regex, but expand (like a command parameter would) the
@@ -262,8 +266,8 @@ highlighter as root:
 
 -----------------------------------------------------------------
 add-highlighter <path>/<lang> regions
-add-highlighter <path>/<lang>/string '"' '"' fill string
-add-highlighter <path>/<lang>/comment '//' '$' fill comment
+add-highlighter <path>/<lang>/string region '"' '"' fill string
+add-highlighter <path>/<lang>/comment region '//' '$' fill comment
 add-highlighter <path>/<lang>/code default-region group
 add-highlighter <path>/<lang>/code/variable regex ...
 add-highlighter <path>/<lang>/code/function regex ...

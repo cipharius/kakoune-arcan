@@ -257,13 +257,12 @@ void DisplayBuffer::optimize()
         line.optimize();
 }
 
-DisplayLine parse_display_line(StringView line, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins)
+DisplayLine parse_display_line(StringView line, Face& face, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins)
 {
     DisplayLine res;
     bool was_antislash = false;
     auto pos = line.begin();
     String content;
-    Face face;
     for (auto it = line.begin(), end = line.end(); it != end; ++it)
     {
         const char c = *it;
@@ -332,22 +331,19 @@ DisplayLine parse_display_line(StringView line, const FaceRegistry& faces, const
     return res;
 }
 
-String fix_atom_text(StringView str)
+DisplayLine parse_display_line(StringView line, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins)
 {
-    String res;
-    auto pos = str.begin();
-    for (auto it = str.begin(), end = str.end(); it != end; ++it)
-    {
-        char c = *it;
-        if (c >= 0 and c <= 0x1F)
-        {
-            res += StringView{pos, it};
-            res += String{Codepoint{(uint32_t)(0x2400 + c)}};
-            pos = it+1;
-        }
-    }
-    res += StringView{pos, str.end()};
-    return res;
+    Face face{};
+    return parse_display_line(line, face, faces, builtins);
+}
+
+DisplayLineList parse_display_line_list(StringView content, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins)
+{
+    return content | split<StringView>('\n')
+                   | transform([&, face=Face{}](StringView s) mutable {
+                         return parse_display_line(s, face, faces, builtins);
+                     })
+                   | gather<DisplayLineList>();
 }
 
 }

@@ -6,11 +6,11 @@ A 'face' determines how text is displayed, it has a foreground
 color, a background color, and some attributes. The value of a face has the
 following format:
 
------------------------------------------
-[fg_color][,bg_color][+attributes][@base]
------------------------------------------
+-----------------------------------------------------------
+[fg_color][,bg_color[,underline_color]][+attributes][@base]
+-----------------------------------------------------------
 
-'fg_color', 'bg_color'::
+'fg_color', 'bg_color', 'underline_color'::
     a color whose value can be expressed in the following formats:
         *black*, *red*, *green*, *yellow*, *blue*, *magenta*, *cyan*, *white*:::
         *bright-black*, *bright-red*, *bright-green*, *bright-yellow*:::
@@ -22,7 +22,7 @@ following format:
             hexadecimal value
         *rgba:RRGGBBAA*:::
             hexadecimal value
-    if unspecified, *default* is used.
+    if unspecified or empty, *default* is used.
     Alpha values are used to blend the face onto either its base or the existing
     color. For technical reasons alpha values must be >16 if specified.
 
@@ -30,6 +30,9 @@ following format:
     string whose individual letters set an attribute:
         *u*:::
             underline
+        *c*:::
+            curly underline, takes precedence over underline if both are
+            specified
         *r*:::
             reverse
         *b*:::
@@ -40,6 +43,8 @@ following format:
             dim
         *i*:::
             italic
+        *s*:::
+            strikethrough
         *F*:::
             final, override the previous face instead of merging with it,
             and this face will only be replaced if another face with
@@ -98,7 +103,13 @@ areas of the user interface:
     face for the informations windows and information messages
 
 *Error*::
-    face of error messages
+    face of errors reported by Kakoune in the status line
+
+*DiagnosticError*::
+    face of errors reported by external tools in the buffer
+
+*DiagnosticWarning*::
+    face of warnings reported by external tools in the buffer
 
 *StatusLine*::
     face used for the status line
@@ -121,7 +132,7 @@ areas of the user interface:
 *BufferPadding*::
     face applied on the `~` characters that follow the last line of a buffer
 
-=== Builtin highlighters faces
+=== Builtin highlighter faces
 
 The following faces are used by builtin highlighters if enabled.
 (See <<highlighters#,`:doc highlighters`>>).

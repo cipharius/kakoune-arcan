@@ -21,7 +21,7 @@ String trim_indent(StringView str)
 
     utf8::iterator it{str.begin(), str};
     while (it != str.end() and is_horizontal_blank(*it))
-        it++;
+        ++it;
 
     const StringView indent{str.begin(), it.base()};
     return accumulate(str | split_after<StringView>('\n') | transform([&](auto&& line) {
@@ -31,7 +31,7 @@ String trim_indent(StringView str)
                 throw runtime_error("inconsistent indentation in the string");
 
             return line.substr(indent.length());
-        }), String{}, [](String& s, StringView l) -> decltype(auto) { return s += l; });
+        }), String{}, [](String s, StringView l) { return s += l; });
 }
 
 String escape(StringView str, StringView characters, char escape)
@@ -359,6 +359,11 @@ StringView format_to(ArrayView<char> buffer, StringView fmt, ArrayView<const Str
     return { buffer.begin(), ptr };
 }
 
+void format_with(FunctionRef<void (StringView)> append, StringView fmt, ArrayView<const StringView> params)
+{
+    format_impl(fmt, params, append);
+}
+
 String format(StringView fmt, ArrayView<const StringView> params)
 {
     ByteCount size = fmt.length();
@@ -390,6 +395,16 @@ String double_up(StringView s, StringView characters)
 UnitTest test_string{[]()
 {
     kak_assert(String("youpi ") + "matin" == "youpi matin");
+
+    kak_assert(StringView{"youpi"}.starts_with(""));
+    kak_assert(StringView{"youpi"}.starts_with("you"));
+    kak_assert(StringView{"youpi"}.starts_with("youpi"));
+    kak_assert(not StringView{"youpi"}.starts_with("youpi!"));
+
+    kak_assert(StringView{"youpi"}.ends_with(""));
+    kak_assert(StringView{"youpi"}.ends_with("pi"));
+    kak_assert(StringView{"youpi"}.ends_with("youpi"));
+    kak_assert(not StringView{"youpi"}.ends_with("oup"));
 
     auto wrapped = "wrap this paragraph\n respecting whitespaces and much_too_long_words" | wrap_at(16) | gather<Vector>();
     kak_assert(wrapped.size() == 6);

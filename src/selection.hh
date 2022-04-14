@@ -74,18 +74,8 @@ void sort_selections(Vector<Selection>& selections, size_t& main);
 void merge_overlapping_selections(Vector<Selection>& selections, size_t& main);
 void clamp_selections(Vector<Selection>& sel, const Buffer& buffer);
 
-enum class InsertMode : unsigned
-{
-    Insert,
-    InsertCursor,
-    Append,
-    Replace,
-    InsertAtLineBegin,
-    InsertAtNextLineBegin,
-    AppendAtLineEnd,
-    OpenLineBelow,
-    OpenLineAbove
-};
+void replace(Buffer& buffer, Selection& sel, StringView content);
+BufferRange insert(Buffer& buffer, Selection& sel, BufferCoord pos, StringView content);
 
 struct SelectionList
 {
@@ -145,8 +135,11 @@ struct SelectionList
     size_t timestamp() const { return m_timestamp; }
     void force_timestamp(size_t timestamp) { m_timestamp = timestamp; }
 
-    void insert(ConstArrayView<String> strings, InsertMode mode,
-                Vector<BufferCoord>* out_insert_pos = nullptr);
+    using ApplyFunc = FunctionRef<void (size_t index, Selection& sel)>;
+    void for_each(ApplyFunc apply);
+
+    void replace(ConstArrayView<String> strings);
+
     void erase();
 
 private:

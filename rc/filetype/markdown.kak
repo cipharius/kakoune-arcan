@@ -42,9 +42,9 @@ add-highlighter shared/markdown/inline/text default-region group
 
 evaluate-commands %sh{
   languages="
-    awk c cabal clojure coffee cpp crystal css cucumber d diff dockerfile fish
+    awk c cabal clojure coffee cpp crystal css cucumber d diff dockerfile elixir erlang fish
     gas go haml haskell html ini java javascript json julia kak kickstart
-    latex lisp lua makefile markdown moon objc perl pug python ragel
+    latex lisp lua makefile markdown moon objc ocaml perl pug python ragel
     ruby rust sass scala scss sh swift toml tupfile typescript yaml sql
   "
   for lang in ${languages}; do
@@ -55,15 +55,20 @@ evaluate-commands %sh{
   done
 }
 
+add-highlighter shared/markdown/listblock region ^\h*[-*]\s ^(?=\S) regions
+add-highlighter shared/markdown/listblock/g default-region group
+add-highlighter shared/markdown/listblock/g/ ref markdown/inline
+add-highlighter shared/markdown/listblock/g/marker regex ^\h*([-*])\s 1:bullet
+
 add-highlighter shared/markdown/codeblock region -match-capture \
     ^(\h*)```\h* \
     ^(\h*)```\h*$ \
     fill meta
-
-add-highlighter shared/markdown/listblock region ^\h*[-*]\s ^\h*((?=[-*])|$) regions
-add-highlighter shared/markdown/listblock/g default-region group
-add-highlighter shared/markdown/listblock/g/ ref markdown/inline
-add-highlighter shared/markdown/listblock/g/marker regex ^\h*([-*])\s 1:bullet
+add-highlighter shared/markdown/listblock/codeblock region -match-capture \
+    ^(\h*)```\h* \
+    ^(\h*)```\h*$ \
+    fill meta
+add-highlighter shared/markdown/codeline region "^( {4}|\t)" "$" fill meta
 
 # https://spec.commonmark.org/0.29/#link-destination
 add-highlighter shared/markdown/angle_bracket_url region (?<=<)([a-z]+://|(mailto|magnet|xmpp):) (?!\\).(?=>)|\n fill link
@@ -90,9 +95,6 @@ add-highlighter shared/markdown/inline/text/ regex (?<!\*)(\*\*([^\s*]|([^\s*](\
 add-highlighter shared/markdown/inline/text/ regex (?<!_)(__([^\s_]|([^\s_](\n?[^\n_])*[^\s_]))__)(?!_) 1:+b
 add-highlighter shared/markdown/inline/text/ regex ^\h*(>\h*)+ 0:comment
 add-highlighter shared/markdown/inline/text/ regex "\H( {2,})$" 1:+r@meta
-
-# Inline code
-add-highlighter shared/markdown/inline/text/ regex "^( {4}|\t)+([^\n]+)" 2:meta
 
 # Commands
 # ‾‾‾‾‾‾‾‾

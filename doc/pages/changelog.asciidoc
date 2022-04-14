@@ -5,6 +5,28 @@ released versions.
 
 == Development version
 
+* `complete-command` (See <<commands#configuring-command-completion,`:doc commands configuring-command-completion`>> 
+
+* `!` and `<a-!>` commands now select the inserted text
+
+== Kakoune 2021.11.07
+
+* Support for curly and separately colored underlines (undocumented in 2021.10.28)
+
+* Fixes for terminal flickering
+
+* Fixes for command and response fifo corner cases
+
+== Kakoune 2021.10.28
+
+* `g` and `v` do not auto lower case the next key, so `GL` needs to be
+  manually mapped to `Gl` for example.
+
+== Kakoune 2021.08.28
+
+* command and response fifo support
+  (See <<expansions#command-and-response-fifo,`:doc expansions command-and-response-fifo`>>)
+
 * Shell expansions only trim the last trailing newline instead of all of
   them to make is possible to losslessly pass text through `%sh{...}`. 
 
@@ -16,12 +38,17 @@ released versions.
 * `write -atomic` was replaced with `write -method [replace|overwrite]` to
   make both write methods available explicitly
 
+* `write <filename>` will fail if the given filename already exists and is
+  a regular file. Use the `-force` switch to override that behaviour.
+
 == Kakoune 2020.09.01
 
 * The `repl` and `send-text` aliases have been renamed respectively into
   `repl-new` and `repl-send-text`.
 
 * Daemon mode (`-d` switch) does not fork anymore.
+
+* Replace NCursesUI with a custom terminal UI implementation
 
 == Kakoune 2020.08.04
 

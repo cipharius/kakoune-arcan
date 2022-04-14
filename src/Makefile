@@ -44,10 +44,7 @@ sources := $(sort $(wildcard *.cc))
 objects := $(addprefix ., $(sources:.cc=$(suffix).o))
 deps := $(addprefix ., $(sources:.cc=$(suffix).d))
 
-PKG_CONFIG ?= $(shell command -v pkg-config 2>/dev/null)
-
 ifeq ($(static),yes)
-    PKG_CONFIG_FLAGS += --static
     LDFLAGS += -static -pthread
 endif
 
@@ -63,45 +60,32 @@ mandir := $(DESTDIR)$(PREFIX)/share/man/man1
 os := $(shell uname)
 
 ifeq ($(os),Darwin)
-    LIBS += -lncurses
-    NCURSES_CFLAGS += -I$(PREFIX)/opt/ncurses/include 
     CPPFLAGS += -I/opt/local/include
-    LDFLAGS += -L$(PREFIX)/opt/ncurses/lib -L/opt/local/lib
+    LDFLAGS += -L/opt/local/lib
 else ifeq ($(os),FreeBSD)
-    LIBS += -ltinfow -lncursesw
     CPPFLAGS += -I/usr/local/include
     LDFLAGS += -L/usr/local/lib
 else ifeq ($(os),Haiku)
-    LIBS += -lncursesw -lnetwork -lbe
+    LIBS += -lnetwork -lbe
 else ifeq ($(os),OpenBSD)
-    LIBS += -lncursesw
     CPPFLAGS += -D'KAK_BIN_PATH="$(bindir)/kak"' -I/usr/local/include
     LDFLAGS += -L/usr/local/lib
     mandir := $(DESTDIR)$(PREFIX)/man/man1
 else ifneq (,$(findstring _NT,$(os)))
     # Both Cygwin and MSYS2 have "_NT" in their uname.
     CPPFLAGS += -D_XOPEN_SOURCE=700
-    LIBS += -lncursesw -ldbghelp
+    LIBS += -ldbghelp
 else ifeq ($(os),SunOS)
-    LIBS += -lncursesw 
     LDFLAGS += -lsocket -rdynamic
 else
-    ifeq ($(PKG_CONFIG),)
-    	$(error "pkg-config not found in PATH")
-    endif
-
-    LIBS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --libs ncursesw arcan-shmif arcan-shmif-tui)
-    NCURSES_CFLAGS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --cflags ncursesw)
-    ARCAN_CFLAGS += $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --cflags arcan-shmif arcan-shmif-tui)
-    ARCAN_CFLAGS += -std=c++2a -pthread
     LDFLAGS += -rdynamic
 endif
 
-CXXFLAGS += -pedantic -std=c++17 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-address
+CXXFLAGS += -pedantic -std=c++2a -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-address
 
 compiler := $(shell $(CXX) --version)
 ifneq (,$(findstring clang,$(compiler)))
-    CXXFLAGS += -frelaxed-template-template-args
+    CXXFLAGS += -frelaxed-template-template-args -Wno-ambiguous-reversed-operator
 else ifneq (,$(findstring g++,$(compiler)))
     CXXFLAGS += -Wno-init-list-lifetime
 endif
@@ -118,10 +102,6 @@ kak$(suffix) : $(objects) .version.o
 
 .%$(suffix).o: %.cc
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MD -MP -MF $(addprefix ., $(<:.cc=$(suffix).d)) -c -o $@ $<
-
-.ncurses_ui$(suffix).o: CPPFLAGS += $(NCURSES_CFLAGS)
-
-.arcan_ui$(suffix).o: CXXFLAGS += $(ARCAN_CFLAGS)
 
 .version.o: .version.cc
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
@@ -173,6 +153,9 @@ installdirs:
 		$(sharedir)/doc \
 		$(docdir) \
 		$(mandir)
+ifeq ($(debug),yes)
+	install -d $(sharedir)/gdb
+endif
 
 install: kak man installdirs
 	install -m 0755 kak $(bindir)
@@ -189,12 +172,16 @@ ifeq ($(gzip_man),yes)
 else
 	install -m 0644 ../doc/kak.1 $(mandir)
 endif
+ifeq ($(debug),yes)
+	install -m 0644 ../gdb/kakoune.py $(sharedir)/gdb
+endif
 
 install-strip: install
 	strip -s $(bindir)/kak
 
 uninstall:
 	rm -rf $(bindir)/kak \
+		$(libexecdir) \
 		$(sharedir) \
 		$(docdir) \
 		$(mandir)/kak.1.gz \

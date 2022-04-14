@@ -1,4 +1,4 @@
-#include "ncurses_ui.hh"
+#include "terminal_ui.hh"
 
 #include "display_buffer.hh"
 #include "event_manager.hh"
@@ -7,13 +7,9 @@
 #include "keys.hh"
 #include "ranges.hh"
 #include "string_utils.hh"
+#include "diff.hh"
 
 #include <algorithm>
-
-#define NCURSES_OPAQUE 0
-#define NCURSES_INTERNALS
-
-#include <ncurses.h>
 
 #include <fcntl.h>
 #include <csignal>
@@ -21,105 +17,378 @@
 #include <unistd.h>
 #include <strings.h>
 
-constexpr char control(char c) { return c & 037; }
-
 namespace Kakoune
 {
 
 using std::min;
 using std::max;
 
-struct NCursesWin : WINDOW {};
-
-void NCursesUI::Window::create(const DisplayCoord& p, const DisplayCoord& s)
+static String fix_atom_text(StringView str)
 {
-    pos = p;
-    size = s;
-    win = (NCursesWin*)newpad((int)size.line, (int)size.column);
-}
-
-void NCursesUI::Window::destroy()
-{
-    delwin(win);
-    win = nullptr;
-    pos = DisplayCoord{};
-    size = DisplayCoord{};
-}
-
-void NCursesUI::Window::refresh(bool force)
-{
-    if (not win)
-        return;
-
-    if (force)
-        redrawwin(win);
-
-    DisplayCoord max_pos = pos + size - DisplayCoord{1,1};
-    pnoutrefresh(win, 0, 0, (int)pos.line, (int)pos.column,
-                 (int)max_pos.line, (int)max_pos.column);
-}
-
-void NCursesUI::Window::move_cursor(DisplayCoord coord)
-{
-    wmove(win, (int)coord.line, (int)coord.column);
-}
-
-void NCursesUI::Window::draw(Palette& palette, ConstArrayView<DisplayAtom> atoms,
-                             const Face& default_face)
-{
-    auto add_str = [&](StringView str) { waddnstr(win, str.begin(), (int)str.length()); };
-
-    auto set_face = [&](Face face) {
-        if (m_active_pair != -1)
-            wattroff(win, COLOR_PAIR(m_active_pair));
-
-        face = merge_faces(default_face, face);
-
-        if (face.fg != Color::Default or face.bg != Color::Default)
+    String res;
+    auto pos = str.begin();
+    for (auto it = str.begin(), end = str.end(); it != end; ++it)
+    {
+        char c = *it;
+        if (c >= 0 and c <= 0x1F)
         {
-            m_active_pair = palette.get_color_pair(face);
-            wattron(win, COLOR_PAIR(m_active_pair));
+            res += StringView{pos, it};
+            res += String{Codepoint{(uint32_t)(0x2400 + c)}};
+            pos = it+1;
+        }
+    }
+    res += StringView{pos, str.end()};
+    return res;
+}
+
+struct TerminalUI::Window::Line
+{
+    struct Atom
+    {
+        String text;
+        ColumnCount skip = 0;
+        Face face;
+
+        ColumnCount length() const { return text.column_length() + skip; }
+        void resize(ColumnCount size)
+        {
+            auto it = text.begin(), end = text.end();
+            while (it != end and size > 0)
+                size -= codepoint_width(utf8::read_codepoint(it, end));
+
+            if (size < 0) // possible if resizing to the middle of a double-width codepoint
+            {
+                kak_assert(size == -1);
+                utf8::to_previous(it, text.begin());
+                skip = 1;
+            }
+            else
+                skip = size;
+            text.resize(it - text.begin(), 0);
         }
 
-        auto set_attribute = [&](Attribute attr, int nc_attr) {
-            (face.attributes & attr) ?  wattron(win, nc_attr) : wattroff(win, nc_attr);
-        };
-
-        set_attribute(Attribute::Underline, A_UNDERLINE);
-        set_attribute(Attribute::Reverse, A_REVERSE);
-        set_attribute(Attribute::Blink, A_BLINK);
-        set_attribute(Attribute::Bold, A_BOLD);
-        set_attribute(Attribute::Dim, A_DIM);
-        #if defined(A_ITALIC)
-        set_attribute(Attribute::Italic, A_ITALIC);
-        #endif
+        friend bool operator==(const Atom& lhs, const Atom& rhs) { return lhs.text == rhs.text and lhs.skip == rhs.skip and lhs.face == rhs.face; }
+        friend bool operator!=(const Atom& lhs, const Atom& rhs) { return not (lhs == rhs); }
+        friend size_t hash_value(const Atom& atom) { return hash_values(atom.text, atom.skip, atom.face); }
     };
 
-    wbkgdset(win, COLOR_PAIR(palette.get_color_pair(default_face)));
+    void append(StringView text, ColumnCount skip, Face face)
+    {
+        if (not atoms.empty() and atoms.back().face == face and (atoms.back().skip == 0 or text.empty()))
+        {
+            atoms.back().text += fix_atom_text(text);
+            atoms.back().skip += skip;
+        }
+        else
+            atoms.push_back({fix_atom_text(text), skip, face});
+    }
 
-    ColumnCount column = getcurx(win);
+    void resize(ColumnCount width)
+    {
+        auto it = atoms.begin();
+        ColumnCount column = 0;
+        for (; it != atoms.end() and column < width; ++it)
+            column += it->length();
+
+        if (column < width)
+            append({}, width - column, atoms.empty() ? Face{} : atoms.back().face);
+        else
+        {
+            atoms.erase(it, atoms.end());
+            if (column > width)
+                atoms.back().resize(atoms.back().length() - (column - width));
+        }
+    }
+
+    Vector<Atom>::iterator erase_range(ColumnCount pos, ColumnCount len)
+    {
+        struct Pos{ Vector<Atom>::iterator it; ColumnCount column; };
+        auto find_col = [pos=0_col, it=atoms.begin(), end=atoms.end()](ColumnCount col) mutable {
+            for (; it != end; ++it)
+            {
+                auto atom_len = it->length();
+                if (pos + atom_len >= col)
+                    return Pos{it, col - pos};
+                pos += atom_len;
+            }
+            return Pos{it, 0_col};
+        };
+        Pos begin = find_col(pos);
+        Pos end = find_col(pos+len);
+
+        auto make_tail = [](const Atom& atom, ColumnCount from) {
+            auto it = atom.text.begin(), end = atom.text.end();
+            while (it != end and from > 0)
+                from -= codepoint_width(utf8::read_codepoint(it, end));
+
+            if (from < 0) // can happen if tail starts in the middle of a double-width codepoint
+            {
+                kak_assert(from == -1);
+                return Atom{" " + StringView{it, end}, atom.skip, atom.face};
+            }
+            return Atom{{it, end}, atom.skip - from, atom.face};
+        };
+
+        if (begin.it == end.it)
+        {
+            Atom tail = make_tail(*begin.it, end.column);
+            begin.it->resize(begin.column);
+            return (tail.text.empty() and tail.skip == 0) ? begin.it+1 : atoms.insert(begin.it+1, tail);
+        }
+
+        begin.it->resize(begin.column);
+        if (end.column > 0)
+        {
+            if (end.column == end.it->length())
+                ++end.it;
+            else
+                *end.it = make_tail(*end.it, end.column);
+        }
+        return atoms.erase(begin.it+1, end.it);
+    }
+
+    Vector<Atom> atoms;
+};
+
+void TerminalUI::Window::create(const DisplayCoord& p, const DisplayCoord& s)
+{
+    kak_assert(p.line >= 0 and p.column >= 0);
+    kak_assert(s.line >= 0 and s.column >= 0);
+    pos = p;
+    size = s;
+    lines.reset(new Line[(int)size.line]);
+}
+
+void TerminalUI::Window::destroy()
+{
+    pos = DisplayCoord{};
+    size = DisplayCoord{};
+    lines.reset();
+}
+
+void TerminalUI::Window::blit(Window& target)
+{
+    kak_assert(pos.line < target.size.line);
+    LineCount line_index = pos.line;
+    for (auto& line : ArrayView{lines.get(), (size_t)size.line})
+    {
+        line.resize(size.column);
+        auto& target_line = target.lines[(size_t)line_index];
+        target_line.resize(target.size.column);
+        target_line.atoms.insert(target_line.erase_range(pos.column, size.column), line.atoms.begin(), line.atoms.end());
+        if (++line_index == target.size.line)
+            break;
+    }
+}
+
+void TerminalUI::Window::draw(DisplayCoord pos,
+                              ConstArrayView<DisplayAtom> atoms,
+                              const Face& default_face)
+{
+    if (pos.line >= size.line) // We might receive an out of date draw command after a resize
+        return;
+
+    lines[(size_t)pos.line].resize(pos.column);
     for (const DisplayAtom& atom : atoms)
     {
         StringView content = atom.content();
         if (content.empty())
             continue;
 
-        set_face(atom.face);
+        auto face = merge_faces(default_face, atom.face);
         if (content.back() == '\n')
-        {
-            add_str(content.substr(0, content.length()-1));
-            waddch(win, ' ');
-        }
+            lines[(int)pos.line].append(content.substr(0, content.length()-1), 1, face);
         else
-            add_str(content);
-        column += content.column_length();
+            lines[(int)pos.line].append(content, 0, face);
+        pos.column += content.column_length();
     }
 
-    if (column < size.column)
-        wclrtoeol(win);
+    if (pos.column < size.column)
+        lines[(int)pos.line].append({}, size.column - pos.column, default_face);
 }
 
-constexpr int NCursesUI::default_shift_function_key;
+struct Writer : BufferedWriter<>
+{
+    using Writer::BufferedWriter::BufferedWriter;
+    ~Writer() noexcept(false) = default;
+};
+
+template<typename... Args>
+static void format_with(Writer& writer, StringView format, Args&&... args)
+{
+    format_with([&](StringView s) { writer.write(s); }, format, std::forward<Args>(args)...);
+}
+
+void TerminalUI::Screen::set_face(const Face& face, Writer& writer)
+{
+    static constexpr int fg_table[]{ 39, 30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97 };
+    static constexpr int bg_table[]{ 49, 40, 41, 42, 43, 44, 45, 46, 47, 100, 101, 102, 103, 104, 105, 106, 107 };
+    static constexpr int ul_table[]{ 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    static constexpr const char* attr_table[]{ "0", "4", "4:3", "7", "5", "1", "2", "3", "9" };
+
+    auto set_color = [&](bool fg, const Color& color, bool join) {
+        if (join)
+            writer.write(";");
+        if (color.isRGB())
+            format_with(writer, "{};2;{};{};{}", fg ? 38 : 48, color.r, color.g, color.b);
+        else
+            format_with(writer, "{}", (fg ? fg_table : bg_table)[(int)(char)color.color]);
+    };
+
+    if (m_active_face == face)
+        return;
+
+    writer.write("\033[");
+    bool join = false;
+    if (face.attributes != m_active_face.attributes)
+    {
+        for (int i = 0; i < std::size(attr_table); ++i)
+        {
+            if (face.attributes & (Attribute)(1 << i))
+                format_with(writer, ";{}", attr_table[i]);
+        }
+        m_active_face.fg = m_active_face.bg = Color::Default;
+        join = true;
+    }
+    if (m_active_face.fg != face.fg)
+    {
+        set_color(true, face.fg, join);
+        join = true;
+    }
+    if (m_active_face.bg != face.bg)
+    {
+        set_color(false, face.bg, join);
+        join = true;
+    }
+    if (m_active_face.underline != face.underline)
+    {
+        if (join)
+            writer.write(";");
+        if (face.underline != Color::Default)
+        {
+            if (face.underline.isRGB())
+                format_with(writer, "58:2::{}:{}:{}", face.underline.r, face.underline.g, face.underline.b);
+            else
+                format_with(writer, "58:5:{}", ul_table[(int)(char)face.underline.color]);
+        }
+        else
+            format_with(writer, "59");
+    }
+    writer.write("m");
+
+    m_active_face = face;
+}
+
+void TerminalUI::Screen::output(bool force, bool synchronized, Writer& writer)
+{
+    if (not lines)
+        return;
+
+    if (force)
+    {
+        std::fill_n(hashes.get(), (size_t)size.line, 0);
+        writer.write("\033[m");
+        m_active_face = Face{};
+    }
+
+    auto hash_line = [](const Line& line) {
+        return (hash_value(line.atoms) << 1) | 1; // ensure non-zero
+    };
+
+    auto output_line = [&](const Line& line) {
+        ColumnCount pending_move = 0;
+        for (auto& [text, skip, face] : line.atoms)
+        {
+            if (text.empty() and skip == 0)
+                continue;
+
+            if (pending_move != 0)
+            {
+                format_with(writer, "\033[{}C", (int)pending_move);
+                pending_move = 0;
+            }
+            set_face(face, writer);
+            writer.write(text);
+            if (skip > 3 and face.attributes == Attribute{})
+            {
+                writer.write("\033[K");
+                pending_move = skip;
+            }
+            else if (skip > 0)
+                writer.write(String{' ', skip});
+        }
+    };
+
+    if (synchronized)
+    {
+        writer.write("\033[?2026h"); // begin synchronized update
+
+        struct Change { int keep; int add; int del; };
+        Vector<Change> changes{Change{}};
+        auto new_hashes = ArrayView{lines.get(), (size_t)size.line} | transform(hash_line);
+        for_each_diff(hashes.get(), (int)size.line,
+                      new_hashes.begin(), (int)size.line,
+                      [&changes](DiffOp op, int len) mutable {
+            switch (op)
+            {
+                case DiffOp::Keep:
+                    changes.push_back({len, 0, 0});
+                    break;
+                case DiffOp::Add:
+                    changes.back().add += len;
+                    break;
+                case DiffOp::Remove:
+                    changes.back().del += len;
+                    break;
+            }
+        });
+        std::copy(new_hashes.begin(), new_hashes.end(), hashes.get());
+
+        int line = 0;
+        for (auto& change : changes)
+        {
+            line += change.keep;
+            if (int del = change.del - change.add; del > 0)
+            {
+                format_with(writer, "\033[{}H\033[{}M", line + 1, del);
+                line -= del;
+            }
+            line += change.del;
+        }
+
+        line = 0;
+        for (auto& change : changes)
+        {
+            line += change.keep;
+            for (int i = 0; i < change.add; ++i)
+            {
+                if (int add = change.add - change.del; i == 0 and add > 0)
+                    format_with(writer, "\033[{}H\033[{}L", line + 1, add);
+                else
+                    format_with(writer, "\033[{}H", line + 1);
+
+                output_line(lines[line++]);
+            }
+        }
+
+        writer.write("\033[?2026l"); // end synchronized update
+    }
+    else
+    {
+        for (int line = 0; line < (int)size.line; ++line)
+        {
+            auto hash = hash_line(lines[line]); 
+            if (hash == hashes[line])
+                continue;
+            hashes[line] = hash;
+
+            format_with(writer, "\033[{}H", line + 1);
+            output_line(lines[line]);
+        }
+    }
+}
+
+constexpr int TerminalUI::default_shift_function_key;
 
 static constexpr StringView assistant_cat[] =
     { R"(  ___            )",
@@ -158,163 +427,6 @@ static constexpr StringView assistant_dilbert[] =
 
 template<typename T> T sq(T x) { return x * x; }
 
-constexpr struct { unsigned char r, g, b; } builtin_colors[] = {
-    {0x00,0x00,0x00}, {0x80,0x00,0x00}, {0x00,0x80,0x00}, {0x80,0x80,0x00},
-    {0x00,0x00,0x80}, {0x80,0x00,0x80}, {0x00,0x80,0x80}, {0xc0,0xc0,0xc0},
-    {0x80,0x80,0x80}, {0xff,0x00,0x00}, {0x00,0xff,0x00}, {0xff,0xff,0x00},
-    {0x00,0x00,0xff}, {0xff,0x00,0xff}, {0x00,0xff,0xff}, {0xff,0xff,0xff},
-    {0x00,0x00,0x00}, {0x00,0x00,0x5f}, {0x00,0x00,0x87}, {0x00,0x00,0xaf},
-    {0x00,0x00,0xd7}, {0x00,0x00,0xff}, {0x00,0x5f,0x00}, {0x00,0x5f,0x5f},
-    {0x00,0x5f,0x87}, {0x00,0x5f,0xaf}, {0x00,0x5f,0xd7}, {0x00,0x5f,0xff},
-    {0x00,0x87,0x00}, {0x00,0x87,0x5f}, {0x00,0x87,0x87}, {0x00,0x87,0xaf},
-    {0x00,0x87,0xd7}, {0x00,0x87,0xff}, {0x00,0xaf,0x00}, {0x00,0xaf,0x5f},
-    {0x00,0xaf,0x87}, {0x00,0xaf,0xaf}, {0x00,0xaf,0xd7}, {0x00,0xaf,0xff},
-    {0x00,0xd7,0x00}, {0x00,0xd7,0x5f}, {0x00,0xd7,0x87}, {0x00,0xd7,0xaf},
-    {0x00,0xd7,0xd7}, {0x00,0xd7,0xff}, {0x00,0xff,0x00}, {0x00,0xff,0x5f},
-    {0x00,0xff,0x87}, {0x00,0xff,0xaf}, {0x00,0xff,0xd7}, {0x00,0xff,0xff},
-    {0x5f,0x00,0x00}, {0x5f,0x00,0x5f}, {0x5f,0x00,0x87}, {0x5f,0x00,0xaf},
-    {0x5f,0x00,0xd7}, {0x5f,0x00,0xff}, {0x5f,0x5f,0x00}, {0x5f,0x5f,0x5f},
-    {0x5f,0x5f,0x87}, {0x5f,0x5f,0xaf}, {0x5f,0x5f,0xd7}, {0x5f,0x5f,0xff},
-    {0x5f,0x87,0x00}, {0x5f,0x87,0x5f}, {0x5f,0x87,0x87}, {0x5f,0x87,0xaf},
-    {0x5f,0x87,0xd7}, {0x5f,0x87,0xff}, {0x5f,0xaf,0x00}, {0x5f,0xaf,0x5f},
-    {0x5f,0xaf,0x87}, {0x5f,0xaf,0xaf}, {0x5f,0xaf,0xd7}, {0x5f,0xaf,0xff},
-    {0x5f,0xd7,0x00}, {0x5f,0xd7,0x5f}, {0x5f,0xd7,0x87}, {0x5f,0xd7,0xaf},
-    {0x5f,0xd7,0xd7}, {0x5f,0xd7,0xff}, {0x5f,0xff,0x00}, {0x5f,0xff,0x5f},
-    {0x5f,0xff,0x87}, {0x5f,0xff,0xaf}, {0x5f,0xff,0xd7}, {0x5f,0xff,0xff},
-    {0x87,0x00,0x00}, {0x87,0x00,0x5f}, {0x87,0x00,0x87}, {0x87,0x00,0xaf},
-    {0x87,0x00,0xd7}, {0x87,0x00,0xff}, {0x87,0x5f,0x00}, {0x87,0x5f,0x5f},
-    {0x87,0x5f,0x87}, {0x87,0x5f,0xaf}, {0x87,0x5f,0xd7}, {0x87,0x5f,0xff},
-    {0x87,0x87,0x00}, {0x87,0x87,0x5f}, {0x87,0x87,0x87}, {0x87,0x87,0xaf},
-    {0x87,0x87,0xd7}, {0x87,0x87,0xff}, {0x87,0xaf,0x00}, {0x87,0xaf,0x5f},
-    {0x87,0xaf,0x87}, {0x87,0xaf,0xaf}, {0x87,0xaf,0xd7}, {0x87,0xaf,0xff},
-    {0x87,0xd7,0x00}, {0x87,0xd7,0x5f}, {0x87,0xd7,0x87}, {0x87,0xd7,0xaf},
-    {0x87,0xd7,0xd7}, {0x87,0xd7,0xff}, {0x87,0xff,0x00}, {0x87,0xff,0x5f},
-    {0x87,0xff,0x87}, {0x87,0xff,0xaf}, {0x87,0xff,0xd7}, {0x87,0xff,0xff},
-    {0xaf,0x00,0x00}, {0xaf,0x00,0x5f}, {0xaf,0x00,0x87}, {0xaf,0x00,0xaf},
-    {0xaf,0x00,0xd7}, {0xaf,0x00,0xff}, {0xaf,0x5f,0x00}, {0xaf,0x5f,0x5f},
-    {0xaf,0x5f,0x87}, {0xaf,0x5f,0xaf}, {0xaf,0x5f,0xd7}, {0xaf,0x5f,0xff},
-    {0xaf,0x87,0x00}, {0xaf,0x87,0x5f}, {0xaf,0x87,0x87}, {0xaf,0x87,0xaf},
-    {0xaf,0x87,0xd7}, {0xaf,0x87,0xff}, {0xaf,0xaf,0x00}, {0xaf,0xaf,0x5f},
-    {0xaf,0xaf,0x87}, {0xaf,0xaf,0xaf}, {0xaf,0xaf,0xd7}, {0xaf,0xaf,0xff},
-    {0xaf,0xd7,0x00}, {0xaf,0xd7,0x5f}, {0xaf,0xd7,0x87}, {0xaf,0xd7,0xaf},
-    {0xaf,0xd7,0xd7}, {0xaf,0xd7,0xff}, {0xaf,0xff,0x00}, {0xaf,0xff,0x5f},
-    {0xaf,0xff,0x87}, {0xaf,0xff,0xaf}, {0xaf,0xff,0xd7}, {0xaf,0xff,0xff},
-    {0xd7,0x00,0x00}, {0xd7,0x00,0x5f}, {0xd7,0x00,0x87}, {0xd7,0x00,0xaf},
-    {0xd7,0x00,0xd7}, {0xd7,0x00,0xff}, {0xd7,0x5f,0x00}, {0xd7,0x5f,0x5f},
-    {0xd7,0x5f,0x87}, {0xd7,0x5f,0xaf}, {0xd7,0x5f,0xd7}, {0xd7,0x5f,0xff},
-    {0xd7,0x87,0x00}, {0xd7,0x87,0x5f}, {0xd7,0x87,0x87}, {0xd7,0x87,0xaf},
-    {0xd7,0x87,0xd7}, {0xd7,0x87,0xff}, {0xd7,0xaf,0x00}, {0xd7,0xaf,0x5f},
-    {0xd7,0xaf,0x87}, {0xd7,0xaf,0xaf}, {0xd7,0xaf,0xd7}, {0xd7,0xaf,0xff},
-    {0xd7,0xd7,0x00}, {0xd7,0xd7,0x5f}, {0xd7,0xd7,0x87}, {0xd7,0xd7,0xaf},
-    {0xd7,0xd7,0xd7}, {0xd7,0xd7,0xff}, {0xd7,0xff,0x00}, {0xd7,0xff,0x5f},
-    {0xd7,0xff,0x87}, {0xd7,0xff,0xaf}, {0xd7,0xff,0xd7}, {0xd7,0xff,0xff},
-    {0xff,0x00,0x00}, {0xff,0x00,0x5f}, {0xff,0x00,0x87}, {0xff,0x00,0xaf},
-    {0xff,0x00,0xd7}, {0xff,0x00,0xff}, {0xff,0x5f,0x00}, {0xff,0x5f,0x5f},
-    {0xff,0x5f,0x87}, {0xff,0x5f,0xaf}, {0xff,0x5f,0xd7}, {0xff,0x5f,0xff},
-    {0xff,0x87,0x00}, {0xff,0x87,0x5f}, {0xff,0x87,0x87}, {0xff,0x87,0xaf},
-    {0xff,0x87,0xd7}, {0xff,0x87,0xff}, {0xff,0xaf,0x00}, {0xff,0xaf,0x5f},
-    {0xff,0xaf,0x87}, {0xff,0xaf,0xaf}, {0xff,0xaf,0xd7}, {0xff,0xaf,0xff},
-    {0xff,0xd7,0x00}, {0xff,0xd7,0x5f}, {0xff,0xd7,0x87}, {0xff,0xd7,0xaf},
-    {0xff,0xd7,0xd7}, {0xff,0xd7,0xff}, {0xff,0xff,0x00}, {0xff,0xff,0x5f},
-    {0xff,0xff,0x87}, {0xff,0xff,0xaf}, {0xff,0xff,0xd7}, {0xff,0xff,0xff},
-    {0x08,0x08,0x08}, {0x12,0x12,0x12}, {0x1c,0x1c,0x1c}, {0x26,0x26,0x26},
-    {0x30,0x30,0x30}, {0x3a,0x3a,0x3a}, {0x44,0x44,0x44}, {0x4e,0x4e,0x4e},
-    {0x58,0x58,0x58}, {0x60,0x60,0x60}, {0x66,0x66,0x66}, {0x76,0x76,0x76},
-    {0x80,0x80,0x80}, {0x8a,0x8a,0x8a}, {0x94,0x94,0x94}, {0x9e,0x9e,0x9e},
-    {0xa8,0xa8,0xa8}, {0xb2,0xb2,0xb2}, {0xbc,0xbc,0xbc}, {0xc6,0xc6,0xc6},
-    {0xd0,0xd0,0xd0}, {0xda,0xda,0xda}, {0xe4,0xe4,0xe4}, {0xee,0xee,0xee},
-};
-
-const std::initializer_list<HashMap<Kakoune::Color, int>::Item>
-NCursesUI::Palette::default_colors = {
-    { Color::Default,       -1 },
-    { Color::Black,          0 },
-    { Color::Red,            1 },
-    { Color::Green,          2 },
-    { Color::Yellow,         3 },
-    { Color::Blue,           4 },
-    { Color::Magenta,        5 },
-    { Color::Cyan,           6 },
-    { Color::White,          7 },
-    { Color::BrightBlack,    8 },
-    { Color::BrightRed,      9 },
-    { Color::BrightGreen,   10 },
-    { Color::BrightYellow,  11 },
-    { Color::BrightBlue,    12 },
-    { Color::BrightMagenta, 13 },
-    { Color::BrightCyan,    14 },
-    { Color::BrightWhite,   15 },
-};
-
-int NCursesUI::Palette::get_color(Color color)
-{
-    auto it = m_colors.find(color);
-    if (it != m_colors.end())
-        return it->value;
-    else if (m_change_colors and can_change_color() and COLORS > 16)
-    {
-        kak_assert(color.isRGB());
-        if (m_next_color > COLORS)
-            m_next_color = 16;
-        init_color(m_next_color,
-                   color.r * 1000 / 255,
-                   color.g * 1000 / 255,
-                   color.b * 1000 / 255);
-        m_colors[color] = m_next_color;
-        return m_next_color++;
-    }
-    else
-    {
-        kak_assert(color.isRGB());
-        int lowestDist = INT_MAX;
-        int closestCol = -1;
-        for (int i = 0; i < std::min(256, COLORS); ++i)
-        {
-            auto& col = builtin_colors[i];
-            int dist = sq(color.r - col.r)
-                     + sq(color.g - col.g)
-                     + sq(color.b - col.b);
-            if (dist < lowestDist)
-            {
-                lowestDist = dist;
-                closestCol = i;
-            }
-        }
-        return closestCol;
-    }
-}
-
-int NCursesUI::Palette::get_color_pair(const Face& face)
-{
-    ColorPair colors{face.fg, face.bg};
-    auto it = m_colorpairs.find(colors);
-    if (it != m_colorpairs.end())
-        return it->value;
-    else
-    {
-        init_pair(m_next_pair, get_color(face.fg), get_color(face.bg));
-        m_colorpairs[colors] = m_next_pair;
-        return m_next_pair++;
-    }
-}
-
-bool NCursesUI::Palette::set_change_colors(bool change_colors)
-{
-    bool reset = false;
-    if (can_change_color() and m_change_colors != change_colors)
-    {
-        fputs("\033]104\007", stdout); // try to reset palette
-        fflush(stdout);
-        m_colorpairs.clear();
-        m_colors = default_colors;
-        m_next_color = 16;
-        m_next_pair = 1;
-        reset = true;
-    }
-    m_change_colors = change_colors;
-    return reset;
-}
-
 static sig_atomic_t resize_pending = 0;
 static sig_atomic_t stdin_closed = 0;
 
@@ -325,7 +437,7 @@ static void signal_handler(int)
     EventManager::instance().force_signal(0);
 }
 
-NCursesUI::NCursesUI()
+TerminalUI::TerminalUI()
     : m_cursor{CursorMode::Buffer, {}},
       m_stdin_watcher{STDIN_FILENO, FdEvents::Read, EventMode::Urgent,
                       [this](FDWatcher&, FdEvents, EventMode) {
@@ -333,7 +445,12 @@ NCursesUI::NCursesUI()
             return;
 
         while (auto key = get_next_key())
-            m_on_key(*key);
+        {
+            if (key == ctrl('z'))
+                kill(0, SIGTSTP); // We suspend at this line
+            else
+                m_on_key(*key);
+        }
       }},
       m_assistant(assistant_clippy)
 {
@@ -342,62 +459,55 @@ NCursesUI::NCursesUI()
 
     tcgetattr(STDIN_FILENO, &m_original_termios);
 
-    initscr();
-    curs_set(0);
-    start_color();
-    use_default_colors();
-
-    set_terminal_mode();
+    setup_terminal();
+    set_raw_mode();
     enable_mouse(true);
 
     set_signal_handler(SIGWINCH, &signal_handler<&resize_pending>);
     set_signal_handler(SIGHUP, &signal_handler<&stdin_closed>);
-    set_signal_handler(SIGTSTP, [](int){ NCursesUI::instance().suspend(); });
+    set_signal_handler(SIGTSTP, [](int){ TerminalUI::instance().suspend(); });
 
     check_resize(true);
     redraw(false);
 }
 
-NCursesUI::~NCursesUI()
+TerminalUI::~TerminalUI()
 {
     enable_mouse(false);
-    m_palette.set_change_colors(false);
-    endwin();
-    restore_terminal_mode();
+    restore_terminal();
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_original_termios);
     set_signal_handler(SIGWINCH, SIG_DFL);
     set_signal_handler(SIGHUP, SIG_DFL);
     set_signal_handler(SIGTSTP, SIG_DFL);
 }
 
-void NCursesUI::suspend()
+void TerminalUI::suspend()
 {
     bool mouse_enabled = m_mouse_enabled;
     enable_mouse(false);
-    bool change_color_enabled = m_palette.get_change_colors();
-    m_palette.set_change_colors(false);
-    endwin();
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_original_termios);
+    restore_terminal();
 
     auto current = set_signal_handler(SIGTSTP, SIG_DFL);
     sigset_t unblock_sigtstp, old_mask;
     sigemptyset(&unblock_sigtstp);
     sigaddset(&unblock_sigtstp, SIGTSTP);
     sigprocmask(SIG_UNBLOCK, &unblock_sigtstp, &old_mask);
-    restore_terminal_mode();
 
     raise(SIGTSTP); // suspend here
 
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_original_termios);
     set_signal_handler(SIGTSTP, current);
     sigprocmask(SIG_SETMASK, &old_mask, nullptr);
 
-    doupdate();
+    setup_terminal();
     check_resize(true);
-    set_terminal_mode();
-    m_palette.set_change_colors(change_color_enabled);
+    set_raw_mode();
     enable_mouse(mouse_enabled);
+
+    refresh(true);
 }
 
-void NCursesUI::set_terminal_mode() const
+void TerminalUI::set_raw_mode() const
 {
     termios attr = m_original_termios;
     attr.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
@@ -409,47 +519,35 @@ void NCursesUI::set_terminal_mode() const
     attr.c_cc[VMIN] = attr.c_cc[VTIME] = 0;
 
     tcsetattr(STDIN_FILENO, TCSANOW, &attr);
-    fputs("\033=", stdout);
-    // force enable report focus events
-    fputs("\033[?1004h", stdout);
-    // request CSI u style key reporting
-    fputs("\033[>4;1m", stdout);
-    fflush(stdout);
 }
 
-void NCursesUI::restore_terminal_mode() const
+void TerminalUI::redraw(bool force)
 {
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &m_original_termios);
-    fputs("\033>", stdout);
-    fputs("\033[?1004l", stdout);
-    fputs("\033[>4;0m", stdout);
-    fflush(stdout);
-}
-
-void NCursesUI::redraw(bool force)
-{
-    m_window.refresh(force);
+    m_window.blit(m_screen);
 
     if (m_menu.columns != 0 or m_menu.pos.column > m_status_len)
-        m_menu.refresh(false);
+        m_menu.blit(m_screen);
 
-    m_info.refresh(false);
+    m_info.blit(m_screen);
 
-    Window screen{{}, static_cast<NCursesWin*>(newscr)};
+    Writer writer{STDOUT_FILENO};
+    m_screen.output(force, (bool)m_synchronized, writer);
+
+    auto set_cursor_pos = [&](DisplayCoord c) {
+        format_with(writer, "\033[{};{}H", (int)c.line + 1, (int)c.column + 1);
+    };
     if (m_cursor.mode == CursorMode::Prompt)
-        screen.move_cursor({m_status_on_top ? 0 : m_dimensions.line, m_cursor.coord.column});
+        set_cursor_pos({m_status_on_top ? 0 : m_dimensions.line, m_cursor.coord.column});
     else
-        screen.move_cursor(m_cursor.coord + content_line_offset());
-
-    doupdate();
+        set_cursor_pos(m_cursor.coord + content_line_offset());
 }
 
-void NCursesUI::set_cursor(CursorMode mode, DisplayCoord coord)
+void TerminalUI::set_cursor(CursorMode mode, DisplayCoord coord)
 {
     m_cursor = Cursor{mode, coord};
 }
 
-void NCursesUI::refresh(bool force)
+void TerminalUI::refresh(bool force)
 {
     if (m_dirty or force)
         redraw(force);
@@ -458,9 +556,9 @@ void NCursesUI::refresh(bool force)
 
 static const DisplayLine empty_line = { String(" "), {} };
 
-void NCursesUI::draw(const DisplayBuffer& display_buffer,
-                     const Face& default_face,
-                     const Face& padding_face)
+void TerminalUI::draw(const DisplayBuffer& display_buffer,
+                      const Face& default_face,
+                      const Face& padding_face)
 {
     check_resize();
 
@@ -468,39 +566,24 @@ void NCursesUI::draw(const DisplayBuffer& display_buffer,
     const LineCount line_offset = content_line_offset();
     LineCount line_index = line_offset;
     for (const DisplayLine& line : display_buffer.lines())
-    {
-        m_window.move_cursor(line_index++);
-        m_window.draw(m_palette, line.atoms(), default_face);
-    }
+        m_window.draw(line_index++, line.atoms(), default_face);
 
     auto face = merge_faces(default_face, padding_face);
+
+    DisplayAtom padding{String{m_padding_char, m_padding_fill ? dim.column : 1}};
+
     while (line_index < dim.line + line_offset)
-    {
-        m_window.move_cursor(line_index++);
-        if (m_padding_fill)
-        {
-            ColumnCount column_index = 0;
-            while (column_index < dim.column)
-            {
-                m_window.draw(m_palette, m_padding_char, face);
-                column_index += m_padding_char.length();
-            }
-        }
-        else
-            m_window.draw(m_palette, m_padding_char, face);
-    }
+        m_window.draw(line_index++, padding, face);
 
     m_dirty = true;
 }
 
-void NCursesUI::draw_status(const DisplayLine& status_line,
-                            const DisplayLine& mode_line,
-                            const Face& default_face)
+void TerminalUI::draw_status(const DisplayLine& status_line,
+                             const DisplayLine& mode_line,
+                             const Face& default_face)
 {
     const LineCount status_line_pos = m_status_on_top ? 0 : m_dimensions.line;
-    m_window.move_cursor(status_line_pos);
-
-    m_window.draw(m_palette, status_line.atoms(), default_face);
+    m_window.draw(status_line_pos, status_line.atoms(), default_face);
 
     const auto mode_len = mode_line.length();
     m_status_len = status_line.length();
@@ -508,8 +591,7 @@ void NCursesUI::draw_status(const DisplayLine& status_line,
     if (mode_len < remaining)
     {
         ColumnCount col = m_dimensions.column - mode_len;
-        m_window.move_cursor({status_line_pos, col});
-        m_window.draw(m_palette, mode_line.atoms(), default_face);
+        m_window.draw({status_line_pos, col}, mode_line.atoms(), default_face);
     }
     else if (remaining > 2)
     {
@@ -519,34 +601,28 @@ void NCursesUI::draw_status(const DisplayLine& status_line,
         kak_assert(trimmed_mode_line.length() == remaining - 1);
 
         ColumnCount col = m_dimensions.column - remaining + 1;
-        m_window.move_cursor({status_line_pos, col});
-        m_window.draw(m_palette, trimmed_mode_line.atoms(), default_face);
+        m_window.draw({status_line_pos, col}, trimmed_mode_line.atoms(), default_face);
     }
 
     if (m_set_title)
     {
+        Writer writer{STDOUT_FILENO};
         constexpr char suffix[] = " - Kakoune\007";
-        char buf[4 + 511 + 2] = "\033]2;";
+        writer.write("\033]2;");
         // Fill title escape sequence buffer, removing non ascii characters
-        auto buf_it = &buf[4], buf_end = &buf[4 + 511 - (sizeof(suffix) - 2)];
         for (auto& atom : mode_line)
         {
             const auto str = atom.content();
-            for (auto it = str.begin(), end = str.end();
-                 it != end and buf_it != buf_end; utf8::to_next(it, end))
-                *buf_it++ = (*it >= 0x20 and *it <= 0x7e) ? *it : '?';
+            for (auto it = str.begin(), end = str.end(); it != end; utf8::to_next(it, end))
+                writer.write((*it >= 0x20 and *it <= 0x7e) ? *it : '?');
         }
-        for (auto c : suffix)
-            *buf_it++ = c;
-
-        fputs(buf, stdout);
-        fflush(stdout);
+        writer.write(suffix);
     }
 
     m_dirty = true;
 }
 
-void NCursesUI::check_resize(bool force)
+void TerminalUI::check_resize(bool force)
 {
     if (not force and not resize_pending)
         return;
@@ -558,9 +634,9 @@ void NCursesUI::check_resize(bool force)
         return;
     auto close_fd = on_scope_end([fd]{ ::close(fd); });
 
-    winsize ws;
-    if (::ioctl(fd, TIOCGWINSZ, &ws) != 0)
-        return;
+    DisplayCoord terminal_size{24_line, 80_col};
+    if (winsize ws; ioctl(fd, TIOCGWINSZ, &ws) == 0 and ws.ws_row > 0 and ws.ws_col > 0)
+        terminal_size = {ws.ws_row, ws.ws_col};
 
     const bool info = (bool)m_info;
     const bool menu = (bool)m_menu;
@@ -568,15 +644,15 @@ void NCursesUI::check_resize(bool force)
     if (info) m_info.destroy();
     if (menu) m_menu.destroy();
 
-    resize_term(ws.ws_row, ws.ws_col);
-
-    m_window.create({0, 0}, {ws.ws_row, ws.ws_col});
+    m_window.create({0, 0}, terminal_size);
+    m_screen.create({0, 0}, terminal_size);
+    m_screen.hashes.reset(new size_t[(int)terminal_size.line]{});
     kak_assert(m_window);
 
-    m_dimensions = DisplayCoord{ws.ws_row-1, ws.ws_col};
+    m_dimensions = terminal_size - 1_line;
 
-    if (char* csr = tigetstr((char*)"csr"))
-        putp(tparm(csr, 0, ws.ws_row));
+    // if (char* csr = tigetstr((char*)"csr"))
+    //     putp(tparm(csr, 0, ws.ws_row));
 
     if (menu)
         menu_show(Vector<DisplayLine>(std::move(m_menu.items)),
@@ -585,10 +661,9 @@ void NCursesUI::check_resize(bool force)
         info_show(m_info.title, m_info.content, m_info.anchor, m_info.face, m_info.style);
 
     set_resize_pending();
-    wclear(curscr);
 }
 
-Optional<Key> NCursesUI::get_next_key()
+Optional<Key> TerminalUI::get_next_key()
 {
     if (stdin_closed)
     {
@@ -623,13 +698,16 @@ Optional<Key> NCursesUI::get_next_key()
     if (not c)
         return {};
 
-    const cc_t erase = m_original_termios.c_cc[VERASE];
-    auto convert = [erase](Codepoint c) -> Codepoint {
+    static constexpr auto control = [](char c) { return c & 037; };
+
+    auto convert = [this](Codepoint c) -> Codepoint {
         if (c == control('m') or c == control('j'))
             return Key::Return;
         if (c == control('i'))
             return Key::Tab;
-        if (c == erase)
+        if (c == ' ')
+            return Key::Space;
+        if (c == m_original_termios.c_cc[VERASE])
             return Key::Backspace;
         if (c == 127) // when it's not backspace
             return Key::Delete;
@@ -640,15 +718,10 @@ Optional<Key> NCursesUI::get_next_key()
     auto parse_key = [&convert](unsigned char c) -> Key {
         if (Codepoint cp = convert(c); cp > 255)
             return Key{cp};
-        if (c == control('z'))
-        {
-            kill(0, SIGTSTP); // We suspend at this line
-            return {};
-        }
         // Special case: you can type NUL with Ctrl-2 or Ctrl-Shift-2 or
         // Ctrl-Backtick, but the most straightforward way is Ctrl-Space.
         if (c == 0)
-            return ctrl(' ');
+            return ctrl(Key::Space);
         // Represent Ctrl-letter combinations in lower-case, to be clear
         // that Shift is not involved.
         if (c < 27)
@@ -683,7 +756,7 @@ Optional<Key> NCursesUI::get_next_key()
 
     auto parse_csi = [this, &convert, &parse_mask]() -> Optional<Key> {
         auto next_char = [] { return get_char().value_or((unsigned char)0xff); };
-        int params[16] = {};
+        int params[16][4] = {};
         auto c = next_char();
         char private_mode = 0;
         if (c == '?' or c == '<' or c == '=' or c == '>')
@@ -691,12 +764,17 @@ Optional<Key> NCursesUI::get_next_key()
             private_mode = c;
             c = next_char();
         }
-        for (int count = 0; count < 16 and c >= 0x30 && c <= 0x3f; c = next_char())
+        for (int count = 0, subcount = 0; count < 16 and c >= 0x30 && c <= 0x3f; c = next_char())
         {
             if (isdigit(c))
-                params[count] = params[count] * 10 + c - '0';
+                params[count][subcount] = params[count][subcount] * 10 + c - '0';
+            else if (c == ':' && subcount < 3)
+                ++subcount;
             else if (c == ';')
+            {
                 ++count;
+                subcount = 0;
+            }
             else
                 return {};
         }
@@ -723,13 +801,13 @@ Optional<Key> NCursesUI::get_next_key()
                     (Codepoint)((down ? 1 : -1) * m_wheel_scroll_amount)};
         };
 
-        auto masked_key = [&](Codepoint key) {
-            int mask = std::max(params[1] - 1, 0);
+        auto masked_key = [&](Codepoint key, Codepoint shifted_key = 0) {
+            int mask = std::max(params[1][0] - 1, 0);
             Key::Modifiers modifiers = parse_mask(mask);
-            if (is_basic_alpha(key) and (modifiers & Key::Modifiers::Shift))
+            if (shifted_key != 0 and (modifiers & Key::Modifiers::Shift))
             {
                 modifiers &= ~Key::Modifiers::Shift;
-                key = to_upper(key);
+                key = shifted_key;
             }
             return Key{modifiers, key};
         };
@@ -737,10 +815,16 @@ Optional<Key> NCursesUI::get_next_key()
         switch (c)
         {
         case '$':
-            switch (params[0])
+            if (private_mode == '?' and next_char() == 'y') // DECRPM
+            {
+                if (params[0][0] == 2026)
+                    m_synchronized.supported = (params[1][0] == 1 or params[1][0] == 2);
+                return {Key::Invalid};
+            }
+            switch (params[0][0])
             {
             case 23: case 24:
-                return Key{Key::Modifiers::Shift, Key::F11 + params[0] - 23}; // rxvt style
+                return Key{Key::Modifiers::Shift, Key::F11 + params[0][0] - 23}; // rxvt style
             }
             return {};
         case 'A': return masked_key(Key::Up);
@@ -755,7 +839,7 @@ Optional<Key> NCursesUI::get_next_key()
         case 'R': return masked_key(Key::F3);
         case 'S': return masked_key(Key::F4);
         case '~':
-            switch (params[0])
+            switch (params[0][0])
             {
             case 1: return masked_key(Key::Home);     // VT220/tmux style
             case 2: return masked_key(Key::Insert);
@@ -766,23 +850,24 @@ Optional<Key> NCursesUI::get_next_key()
             case 7: return masked_key(Key::Home);     // rxvt style
             case 8: return masked_key(Key::End);      // rxvt style
             case 11: case 12: case 13: case 14: case 15:
-                return masked_key(Key::F1 + params[0] - 11);
+                return masked_key(Key::F1 + params[0][0] - 11);
             case 17: case 18: case 19: case 20: case 21:
-                return masked_key(Key::F6 + params[0] - 17);
+                return masked_key(Key::F6 + params[0][0] - 17);
             case 23: case 24:
-                return masked_key(Key::F11 + params[0] - 23);
+                return masked_key(Key::F11 + params[0][0] - 23);
             case 25: case 26:
-                return Key{Key::Modifiers::Shift, Key::F3 + params[0] - 25}; // rxvt style
+                return Key{Key::Modifiers::Shift, Key::F3 + params[0][0] - 25}; // rxvt style
             case 28: case 29:
-                return Key{Key::Modifiers::Shift, Key::F5 + params[0] - 28}; // rxvt style
+                return Key{Key::Modifiers::Shift, Key::F5 + params[0][0] - 28}; // rxvt style
             case 31: case 32:
-                return Key{Key::Modifiers::Shift, Key::F7 + params[0] - 31}; // rxvt style
+                return Key{Key::Modifiers::Shift, Key::F7 + params[0][0] - 31}; // rxvt style
             case 33: case 34:
-                return Key{Key::Modifiers::Shift, Key::F9 + params[0] - 33}; // rxvt style
+                return Key{Key::Modifiers::Shift, Key::F9 + params[0][0] - 33}; // rxvt style
             }
             return {};
         case 'u':
-            return masked_key(convert(static_cast<Codepoint>(params[0])));
+            return masked_key(convert(static_cast<Codepoint>(params[0][0])),
+                              convert(static_cast<Codepoint>(params[0][1])));
         case 'Z': return shift(Key::Tab);
         case 'I': return {Key::FocusIn};
         case 'O': return {Key::FocusOut};
@@ -791,9 +876,9 @@ Optional<Key> NCursesUI::get_next_key()
             if (not sgr and c != 'M')
                 return {};
 
-            const Codepoint b = sgr ? params[0] : next_char() - 32;
-            const int x = (sgr ? params[1] : next_char() - 32) - 1;
-            const int y = (sgr ? params[2] : next_char() - 32) - 1;
+            const Codepoint b = sgr ? params[0][0] : next_char() - 32;
+            const int x = (sgr ? params[1][0] : next_char() - 32) - 1;
+            const int y = (sgr ? params[2][0] : next_char() - 32) - 1;
             auto coord = encode_coord({y - content_line_offset(), x});
             Key::Modifiers mod = parse_mask((b >> 2) & 0x7);
             switch (const int code = b & 0x43; code)
@@ -825,7 +910,7 @@ Optional<Key> NCursesUI::get_next_key()
 
         switch (code)
         {
-        case ' ': return Key{mod, ' '};
+        case ' ': return Key{mod, Key::Space};
         case 'A': return Key{mod, Key::Up};
         case 'B': return Key{mod, Key::Down};
         case 'C': return Key{mod, Key::Right};
@@ -879,7 +964,7 @@ T div_round_up(T a, T b)
     return (a - T(1)) / b + T(1);
 }
 
-void NCursesUI::draw_menu()
+void TerminalUI::draw_menu()
 {
     // menu show may have not created the window if it did not fit.
     // so be tolerant.
@@ -893,8 +978,7 @@ void NCursesUI::draw_menu()
         kak_assert(m_menu.size.line == 1);
         ColumnCount pos = 0;
 
-        m_menu.move_cursor({0, 0});
-        m_menu.draw(m_palette, DisplayAtom(m_menu.first_item > 0 ? "< " : "  "), m_menu.bg);
+        m_menu.draw({0, 0}, DisplayAtom(m_menu.first_item > 0 ? "< " : ""), m_menu.bg);
 
         int i = m_menu.first_item;
         for (; i < item_count and pos < win_width; ++i)
@@ -902,19 +986,14 @@ void NCursesUI::draw_menu()
             const DisplayLine& item = m_menu.items[i];
             const ColumnCount item_width = item.length();
             auto& face = i == m_menu.selected_item ? m_menu.fg : m_menu.bg;
-            m_menu.draw(m_palette, item.atoms(), face);
-            if (pos + item_width < win_width)
-                m_menu.draw(m_palette, DisplayAtom(" "), m_menu.bg);
-            else
-            {
-                m_menu.move_cursor({0, win_width+2});
-                m_menu.draw(m_palette, DisplayAtom("…"), m_menu.bg);
-            }
+            m_menu.draw({0, pos+2}, item.atoms(), face);
+            if (pos + item_width >= win_width)
+                m_menu.draw({0, win_width+2}, DisplayAtom("…"), m_menu.bg);
             pos += item_width + 1;
         }
 
-        m_menu.move_cursor({0, win_width+3});
-        m_menu.draw(m_palette, DisplayAtom(i == item_count ? " " : ">"), m_menu.bg);
+        if (i != item_count)
+            m_menu.draw({0, win_width+3}, DisplayAtom(">"), m_menu.bg);
 
         m_dirty = true;
         return;
@@ -938,15 +1017,13 @@ void NCursesUI::draw_menu()
     {
         for (int col = 0; col < m_menu.columns; ++col)
         {
-            m_menu.move_cursor({line, col * column_width});
             int item_idx = (first_col + col) * (int)m_menu.size.line + (int)line;
             auto& face = item_idx < item_count and item_idx == m_menu.selected_item ? m_menu.fg : m_menu.bg;
             auto atoms = item_idx < item_count ? m_menu.items[item_idx].atoms() : ConstArrayView<DisplayAtom>{};
-            m_menu.draw(m_palette, atoms, face);
+            m_menu.draw({line, col * column_width}, atoms, face);
         }
         const bool is_mark = line >= mark_line and line < mark_line + mark_height;
-        m_menu.move_cursor({line, m_menu.size.column - 1});
-        m_menu.draw(m_palette, DisplayAtom(is_mark ? "█" : "░"), m_menu.bg);
+        m_menu.draw({line, m_menu.size.column - 1}, DisplayAtom(is_mark ? "█" : "░"), m_menu.bg);
     }
     m_dirty = true;
 }
@@ -963,9 +1040,9 @@ static LineCount height_limit(MenuStyle style)
     return 0_line;
 }
 
-void NCursesUI::menu_show(ConstArrayView<DisplayLine> items,
-                          DisplayCoord anchor, Face fg, Face bg,
-                          MenuStyle style)
+void TerminalUI::menu_show(ConstArrayView<DisplayLine> items,
+                           DisplayCoord anchor, Face fg, Face bg,
+                           MenuStyle style)
 {
     if (m_menu)
     {
@@ -1018,7 +1095,7 @@ void NCursesUI::menu_show(ConstArrayView<DisplayLine> items,
     }
     else if (not is_inline)
         line = m_status_on_top ? 1_line : m_dimensions.line - height;
-    else if (line + height > m_dimensions.line)
+    else if (line + height > m_dimensions.line and anchor.line >= height)
         line = anchor.line - height;
 
     const auto width = is_search ? m_dimensions.column - m_dimensions.column / 2
@@ -1035,7 +1112,7 @@ void NCursesUI::menu_show(ConstArrayView<DisplayLine> items,
                   m_info.anchor, m_info.face, m_info.style);
 }
 
-void NCursesUI::menu_select(int selected)
+void TerminalUI::menu_select(int selected)
 {
     const int item_count = m_menu.items.size();
     if (selected < 0 or selected >= item_count)
@@ -1076,7 +1153,7 @@ void NCursesUI::menu_select(int selected)
     draw_menu();
 }
 
-void NCursesUI::menu_hide()
+void TerminalUI::menu_hide()
 {
     if (not m_menu)
         return;
@@ -1091,7 +1168,7 @@ void NCursesUI::menu_hide()
 }
 
 static DisplayCoord compute_pos(DisplayCoord anchor, DisplayCoord size,
-                                NCursesUI::Rect rect, NCursesUI::Rect to_avoid,
+                                TerminalUI::Rect rect, TerminalUI::Rect to_avoid,
                                 bool prefer_above)
 {
     DisplayCoord pos;
@@ -1105,10 +1182,10 @@ static DisplayCoord compute_pos(DisplayCoord anchor, DisplayCoord size,
     if (not prefer_above)
     {
         pos = anchor + DisplayCoord{1_line};
-        if (pos.line + size.line > rect_end.line)
+        if (pos.line + size.line >= rect_end.line)
             pos.line = max(rect.pos.line, anchor.line - size.line);
     }
-    if (pos.column + size.column > rect_end.column)
+    if (pos.column + size.column >= rect_end.column)
         pos.column = max(rect.pos.column, rect_end.column - size.column);
 
     if (to_avoid.size != DisplayCoord{})
@@ -1163,8 +1240,8 @@ static DisplayLineList wrap_lines(const DisplayLineList& lines, ColumnCount max_
     return result;
 }
 
-void NCursesUI::info_show(const DisplayLine& title, const DisplayLineList& content,
-                          DisplayCoord anchor, Face face, InfoStyle style)
+void TerminalUI::info_show(const DisplayLine& title, const DisplayLineList& content,
+                           DisplayCoord anchor, Face face, InfoStyle style)
 {
     info_hide();
 
@@ -1240,19 +1317,27 @@ void NCursesUI::info_show(const DisplayLine& title, const DisplayLineList& conte
     }
 
     m_info.create(anchor, size);
-    auto draw_atoms = [&](auto&&... args) {
-        auto draw = overload(
-            [&](String str) { m_info.draw(m_palette, DisplayAtom{std::move(str)}, face); },
-            [&](const DisplayLine& atoms) { m_info.draw(m_palette, atoms.atoms(), face); });
-
-        (draw(args), ...);
-    };
-
     for (auto line = 0_line; line < size.line; ++line)
     {
+        auto draw_atoms = [&, this, pos=DisplayCoord{line}](auto&&... args) mutable {
+            auto draw = overload(
+                [&](ColumnCount padding) {
+                    pos.column += padding;
+                },
+                [&](String str) {
+                    auto len = str.column_length();
+                    m_info.draw(pos, DisplayAtom{std::move(str)}, face);
+                    pos.column += len;
+                },
+                [&](const DisplayLine& atoms) {
+                    m_info.draw(pos, atoms.atoms(), face);
+                    pos.column += atoms.length();
+                });
+            (draw(args), ...);
+        };
+
         constexpr Codepoint dash{L'─'};
         constexpr Codepoint dotted_dash{L'┄'};
-        m_info.move_cursor(line);
         if (assisted)
         {
             const auto assistant_top_margin = (size.line - m_assistant.size()+1) / 2;
@@ -1283,15 +1368,15 @@ void NCursesUI::info_show(const DisplayLine& title, const DisplayLineList& conte
             auto info_line = lines[(int)line - 1];
             const bool trimmed = info_line.trim(0, content_size.column);
             const ColumnCount padding = content_size.column - info_line.length();
-            draw_atoms("│ ", info_line, String{' ', padding} + (trimmed ? "…│" : " │"));
+            draw_atoms("│ ", info_line, padding, (trimmed ? "…│" : " │"));
         }
         else if (line == std::min<LineCount>((int)lines.size() + 1, size.line - 1))
-            draw_atoms("╰─" + String(line > lines.size() ? dash : dotted_dash, content_size.column) + "─╯");
+            draw_atoms("╰─", String(line > lines.size() ? dash : dotted_dash, content_size.column), "─╯");
     }
     m_dirty = true;
 }
 
-void NCursesUI::info_hide()
+void TerminalUI::info_hide()
 {
     if (not m_info)
         return;
@@ -1299,34 +1384,57 @@ void NCursesUI::info_hide()
     m_dirty = true;
 }
 
-void NCursesUI::set_on_key(OnKeyCallback callback)
+void TerminalUI::set_on_key(OnKeyCallback callback)
 {
     m_on_key = std::move(callback);
     EventManager::instance().force_signal(0);
 }
 
-DisplayCoord NCursesUI::dimensions()
+DisplayCoord TerminalUI::dimensions()
 {
     return m_dimensions;
 }
 
-LineCount NCursesUI::content_line_offset() const
+LineCount TerminalUI::content_line_offset() const
 {
     return m_status_on_top ? 1 : 0;
 }
 
-void NCursesUI::set_resize_pending()
+void TerminalUI::set_resize_pending()
 {
     m_resize_pending = true;
     EventManager::instance().force_signal(0);
 }
 
-void NCursesUI::abort()
+void TerminalUI::setup_terminal()
 {
-    endwin();
+    write(STDOUT_FILENO,
+        "\033[?1049h" // enable alternative screen buffer
+        "\033[?1004h" // enable focus notify
+        "\033[>4;1m"  // request CSI u style key reporting
+        "\033[>5u"    // kitty progressive enhancement - report shifted key codes
+        "\033[22t"    // save the current window title
+        "\033[?25l"   // hide cursor
+        "\033="       // set application keypad mode, so the keypad keys send unique codes
+        "\033[?2026$p" // query support for synchronize output
+    );
 }
 
-void NCursesUI::enable_mouse(bool enabled)
+void TerminalUI::restore_terminal()
+{
+    write(STDOUT_FILENO,
+        "\033>"
+        "\033[?25h"
+        "\033[23t"
+        "\033[<u"
+        "\033[>4;0m"
+        "\033[?1004l"
+        "\033[?1049l"
+        "\033[m" // set the terminal output back to default colours and style
+    );
+}
+
+void TerminalUI::enable_mouse(bool enabled)
 {
     if (enabled == m_mouse_enabled)
         return;
@@ -1334,102 +1442,56 @@ void NCursesUI::enable_mouse(bool enabled)
     m_mouse_enabled = enabled;
     if (enabled)
     {
-        // force SGR mode
-        fputs("\033[?1006h", stdout);
-        // enable mouse
-        fputs("\033[?1000h", stdout);
-        // force enable report mouse position
-        fputs("\033[?1002h", stdout);
+        write(STDOUT_FILENO,
+            "\033[?1006h" // force SGR mode
+            "\033[?1000h" // enable mouse
+            "\033[?1002h" // force enable report mouse position
+        );
     }
     else
     {
-        fputs("\033[?1002l", stdout);
-        fputs("\033[?1000l", stdout);
-        fputs("\033[?1006l", stdout);
+        write(STDOUT_FILENO,
+            "\033[?1002l"
+            "\033[?1000l"
+            "\033[?1006l"
+        );
     }
-    fflush(stdout);
 }
 
-void NCursesUI::set_ui_options(const Options& options)
+void TerminalUI::set_ui_options(const Options& options)
 {
-    {
-        auto it = options.find("ncurses_assistant"_sv);
-        if (it == options.end() or it->value == "clippy")
-            m_assistant = assistant_clippy;
-        else if (it->value == "cat")
-            m_assistant = assistant_cat;
-        else if (it->value == "dilbert")
-            m_assistant = assistant_dilbert;
-        else if (it->value == "none" or it->value == "off")
-            m_assistant = ConstArrayView<StringView>{};
-    }
+    auto find = [&](StringView name) -> Optional<StringView> {
+        if (auto it = options.find(name); it != options.end())
+            return StringView{it->value};
+        return {};
+    };
 
-    {
-        auto it = options.find("ncurses_status_on_top"_sv);
-        m_status_on_top = it != options.end() and
-            (it->value == "yes" or it->value == "true");
-    }
+    auto assistant = find("terminal_assistant").value_or("clippy");
+    if (assistant == "clippy")
+        m_assistant = assistant_clippy;
+    else if (assistant == "cat")
+        m_assistant = assistant_cat;
+    else if (assistant == "dilbert")
+        m_assistant = assistant_dilbert;
+    else if (assistant == "none" or assistant == "off")
+        m_assistant = ConstArrayView<StringView>{};
 
-    {
-        auto it = options.find("ncurses_set_title"_sv);
-        m_set_title = it == options.end() or
-            (it->value == "yes" or it->value == "true");
-    }
+    auto to_bool = [](StringView s) { return s == "yes" or s == "true"; };
 
-    {
-        auto it = options.find("ncurses_shift_function_key"_sv);
-        m_shift_function_key = it != options.end() ?
-            str_to_int_ifp(it->value).value_or(default_shift_function_key)
-          : default_shift_function_key;
-    }
+    m_status_on_top = find("terminal_status_on_top").map(to_bool).value_or(false);
+    m_set_title = find("terminal_set_title").map(to_bool).value_or(true);
 
-    {
-        auto it = options.find("ncurses_change_colors"_sv);
-        if (m_palette.set_change_colors(it == options.end() or
-                                        (it->value == "yes" or it->value == "true")))
-        {
-            m_window.m_active_pair = -1;
-            m_menu.m_active_pair = -1;
-            m_info.m_active_pair = -1;
-        }
-    }
+    auto synchronized = find("terminal_synchronized").map(to_bool);
+    m_synchronized.set = (bool)synchronized;
+    m_synchronized.requested = synchronized.value_or(false);
 
-    {
-        auto enable_mouse_it = options.find("ncurses_enable_mouse"_sv);
-        enable_mouse(enable_mouse_it == options.end() or
-                     enable_mouse_it->value == "yes" or
-                     enable_mouse_it->value == "true");
+    m_shift_function_key = find("terminal_shift_function_key").map(str_to_int_ifp).value_or(default_shift_function_key);
 
-        auto wheel_up_it = options.find("ncurses_wheel_up_button"_sv);
-        m_wheel_up_button = wheel_up_it != options.end() ?
-            str_to_int_ifp(wheel_up_it->value).value_or(4) : 4;
+    enable_mouse(find("terminal_enable_mouse").map(to_bool).value_or(true));
+    m_wheel_scroll_amount = find("terminal_wheel_scroll_amount").map(str_to_int_ifp).value_or(3);
 
-        auto wheel_down_it = options.find("ncurses_wheel_down_button"_sv);
-        m_wheel_down_button = wheel_down_it != options.end() ?
-            str_to_int_ifp(wheel_down_it->value).value_or(5) : 5;
-
-        auto wheel_scroll_amount_it = options.find("ncurses_wheel_scroll_amount"_sv);
-        m_wheel_scroll_amount = wheel_scroll_amount_it != options.end() ?
-            str_to_int_ifp(wheel_scroll_amount_it->value).value_or(3) : 3;
-    }
-
-    {
-        auto it = options.find("ncurses_padding_char"_sv);
-        if (it == options.end())
-            // Defaults to tilde.
-            m_padding_char = DisplayAtom("~");
-        else if (it->value.column_length() < 1)
-            // Do not allow empty string, use space instead.
-            m_padding_char = DisplayAtom(" ");
-        else
-            m_padding_char = DisplayAtom(it->value);
-    }
-
-    {
-        auto it = options.find("ncurses_padding_fill"_sv);
-        m_padding_fill = it != options.end() and
-            (it->value == "yes" or it->value == "true");
-    }
+    m_padding_char = find("terminal_padding_char").map([](StringView s) { return s.column_length() < 1 ? ' ' : s[0_char]; }).value_or(Codepoint{'~'});
+    m_padding_fill = find("terminal_padding_fill").map(to_bool).value_or(false);
 }
 
 }

@@ -1,7 +1,7 @@
 # Detection
 # ‾‾‾‾‾‾‾‾‾
 
-hook global BufCreate .*[.](php) %{
+hook global BufCreate .*[.](phpt?) %{
     set-option buffer filetype php
 }
 
@@ -39,7 +39,7 @@ add-highlighter shared/php/doc_comment2  region /\*\*  \*/             ref php/d
 add-highlighter shared/php/comment1      region //     '$'             fill comment
 add-highlighter shared/php/comment2      region /\*    \*/             fill comment
 add-highlighter shared/php/comment3      region '#'    '$'             fill comment
-
+add-highlighter shared/php/heredoc       region -match-capture '<<<(.*?)$' '^\h*(.*?);' fill string
 
 
 add-highlighter shared/php/code/ regex &?\$\w* 0:variable
@@ -85,7 +85,7 @@ define-command -hidden php-indent-on-char %<
 define-command -hidden php-insert-on-new-line %<
     evaluate-commands -draft -itersel %<
         # copy // comments or docblock * prefix and following white spaces
-        try %{ execute-keys -draft s [^/] <ret> k <a-x> s ^\h*\K(?://|[*][^/])\h* <ret> y gh j P
+        try %{ execute-keys -draft s [^/] <ret> k <a-x> s ^\h*\K(?://|[*][^/])\h* <ret> y gh j P }
         # append " * " on lines starting a multiline /** or /* comment
         try %{ execute-keys -draft k <a-x> s ^\h*/[*][* ]? <ret> j gi i <space>*<space> }
     >
