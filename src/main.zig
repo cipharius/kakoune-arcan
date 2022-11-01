@@ -1,24 +1,33 @@
 const std = @import("std");
 
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    const arena_allocator = arena.allocator();
+    const args = try std.process.argsAlloc(arena_allocator);
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    const ui_override = block: {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "-ui")) break :block true;
+        }
+        break :block false;
+    };
 
-    try bw.flush(); // don't forget to flush!
-}
+    var kak_args: [][]const u8 = undefined;
+    if (ui_override) {
+        kak_args = try arena_allocator.alloc([]const u8, args.len);
+        std.mem.copy([]const u8, kak_args[1..], args[1..]);
+        kak_args[0] = "kak";
+    } else {
+        kak_args = try arena_allocator.alloc([]const u8, args.len + 2);
+        std.mem.copy([]const u8, kak_args[3..], args[1..]);
+        kak_args[0] = "kak";
+        kak_args[1] = "-ui";
+        kak_args[2] = "json";
+    }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    var process = std.ChildProcess.init(kak_args, arena_allocator);
+    try process.spawn();
+    _ = try process.wait();
 }
