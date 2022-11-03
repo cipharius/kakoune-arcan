@@ -1,6 +1,8 @@
 const std = @import("std");
 const json = std.json;
 
+const logger = std.log.scoped(.rpc_server);
+
 parser: json.StreamingParser = json.StreamingParser.init(),
 message: ?[]const u8 = null,
 cursor: usize = 0,
@@ -84,7 +86,7 @@ pub fn evaluate(
         .set_ui_options => try server.handleSetUiOptions(),
         .refresh        => try server.handleRefresh(),
         .Unknown        => {
-            std.debug.print("Unknown method: {s}\n", .{message});
+            logger.warn("Unknown method: {s}\n", .{message});
             try server.skipParams();
         },
     }
@@ -95,19 +97,19 @@ pub fn evaluate(
 fn handleDraw(server: *@This()) Error!void {
     try server.skipParams();
 
-    std.debug.print("draw(?)\n", .{});
+    logger.debug("draw(?)", .{});
 }
 
 fn handleDrawStatus(server: *@This()) Error!void {
     try server.skipParams();
 
-    std.debug.print("draw_status(?)\n", .{});
+    logger.debug("draw_status(?)", .{});
 }
 
 fn handleMenuShow(server: *@This()) Error!void {
     try server.skipParams();
 
-    std.debug.print("menu_show(?)\n", .{});
+    logger.debug("menu_show(?)", .{});
 }
 
 fn handleMenuSelect(server: *@This()) Error!void {
@@ -115,14 +117,14 @@ fn handleMenuSelect(server: *@This()) Error!void {
     const selected = try server.nextInt(u32);
     try server.expectNextToken(.ArrayEnd);
 
-    std.debug.print("menu_select({})\n", .{selected});
+    logger.debug("menu_select({})", .{selected});
 }
 
 fn handleMenuHide(server: *@This()) Error!void {
     try server.expectNextToken(.ArrayBegin);
     try server.expectNextToken(.ArrayEnd);
 
-    std.debug.print("menu_hide()\n", .{});
+    logger.debug("menu_hide()", .{});
 }
 
 fn handleInfoShow(server: *@This()) Error!void {
@@ -133,7 +135,7 @@ fn handleInfoHide(server: *@This()) Error!void {
     try server.expectNextToken(.ArrayBegin);
     try server.expectNextToken(.ArrayEnd);
 
-    std.debug.print("info_hide()\n", .{});
+    logger.debug("info_hide()", .{});
 }
 
 fn handleSetCursor(server: *@This()) Error!void {
@@ -147,14 +149,14 @@ fn handleSetCursor(server: *@This()) Error!void {
 
     try server.expectNextToken(.ArrayEnd);
 
-    std.debug.print("set_cursor({}, {})\n", .{mode, coord});
+    logger.debug("set_cursor({}, {})", .{mode, coord});
 }
 
 fn handleSetUiOptions(server: *@This()) Error!void {
     try server.expectNextToken(.ArrayBegin);
     try server.expectNextToken(.ObjectBegin);
 
-    std.debug.print("set_ui_options({{", .{});
+    logger.debug("set_ui_options({{", .{});
     while (true) {
         const key = switch (try server.nextToken()) {
             .String => |t| t.slice(server.message.?, server.cursor - 1),
@@ -162,9 +164,9 @@ fn handleSetUiOptions(server: *@This()) Error!void {
             else => return Error.UnexpectedToken,
         };
         const value = try server.nextString();
-        std.debug.print("\"{s}\" : \"{s}\",", .{key, value});
+        logger.debug("\"{s}\" : \"{s}\",", .{key, value});
     }
-    std.debug.print("}})\n", .{});
+    logger.debug("}})", .{});
 
     try server.expectNextToken(.ArrayEnd);
 
@@ -175,7 +177,7 @@ fn handleRefresh(server: *@This()) Error!void {
     const force = try server.nextBool();
     try server.expectNextToken(.ArrayEnd);
 
-    std.debug.print("refresh({})\n", .{force});
+    logger.debug("refresh({})", .{force});
 }
 
 fn initParser(server: *@This(), message: []const u8) void {
