@@ -48,8 +48,6 @@ pub fn main() !void {
     var line = std.ArrayList(u8).init(allocator);
     defer line.deinit();
 
-    var rpc_server = RpcServer.init();
-
     while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', 4096))
     : (line.clearRetainingCapacity()) {
         if (line.items.len == 0) continue;
@@ -59,7 +57,7 @@ pub fn main() !void {
             continue;
         }
 
-        try rpc_server.evaluate(allocator, line.items);
+        try RpcServer.receive(allocator, line.items);
     } else |err| {
         if (err != error.EndOfStream) return err;
     }
