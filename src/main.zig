@@ -2,8 +2,7 @@ const std = @import("std");
 const RpcServer = @import("./RpcServer.zig");
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var allocator = std.heap.c_allocator;
 
     try std.os.sigaction(std.os.SIG.INT, &.{
         .handler = .{ .handler = handleSigint },
@@ -11,12 +10,11 @@ pub fn main() !void {
         .flags = 0,
     }, null);
 
-    const arena_allocator = arena.allocator();
-
     var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
     const stdout_writer = stdout_buffer.writer();
 
-    const args = try std.process.argsAlloc(arena_allocator);
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
     const ui_override = block: {
         for (args) |arg| {
@@ -27,24 +25,29 @@ pub fn main() !void {
 
     var kak_args: [][]const u8 = undefined;
     if (ui_override) {
-        kak_args = try arena_allocator.alloc([]const u8, args.len);
+        kak_args = try allocator.alloc([]const u8, args.len);
         std.mem.copy([]const u8, kak_args[1..], args[1..]);
         kak_args[0] = "kak";
     } else {
-        kak_args = try arena_allocator.alloc([]const u8, args.len + 2);
+        kak_args = try allocator.alloc([]const u8, args.len + 2);
         std.mem.copy([]const u8, kak_args[3..], args[1..]);
         kak_args[0] = "kak";
         kak_args[1] = "-ui";
         kak_args[2] = "json";
     }
+    defer allocator.free(kak_args);
 
-    var kak_process = std.ChildProcess.init(kak_args, arena_allocator);
+    var kak_process = std.ChildProcess.init(kak_args, allocator);
     kak_process.stdout_behavior = std.ChildProcess.StdIo.Pipe;
     try kak_process.spawn();
+    defer _ = kak_process.kill() catch {};
 
     var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
     var stdin_reader = stdin_stream.reader();
-    var line = std.ArrayList(u8).init(arena_allocator);
+
+    var line = std.ArrayList(u8).init(allocator);
+    defer line.deinit();
+
     var rpc_server = RpcServer.init();
 
     while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', 4096))
@@ -56,12 +59,10 @@ pub fn main() !void {
             continue;
         }
 
-        try rpc_server.evaluate(line.items);
+        try rpc_server.evaluate(allocator, line.items);
     } else |err| {
         if (err != error.EndOfStream) return err;
     }
-
-    _ = try kak_process.kill();
 }
 
 fn handleSigint(_: c_int) callconv(.C) void {}

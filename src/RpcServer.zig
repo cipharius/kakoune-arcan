@@ -47,7 +47,18 @@ pub const Error = error {
     UnknownMethod,
 };
 
-pub fn evaluate(server: *@This(), message: []const u8) Error!void {
+pub fn evaluate(
+    server: *@This(),
+    backing_allocator: std.mem.Allocator,
+    message: []const u8
+) Error!void {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    defer arena.deinit();
+    var allocator = arena.allocator();
+
+    // Will be required for later
+    _ = allocator;
+
     server.initParser(message);
 
     try server.expectNextToken(.ObjectBegin);
