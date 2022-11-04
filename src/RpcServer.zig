@@ -1,5 +1,9 @@
 const std = @import("std");
 const Parser = @import("./Parser.zig");
+const TUI = @import("./TUI.zig");
+
+allocator: std.mem.Allocator,
+tui: *TUI,
 
 const logger = std.log.scoped(.rpc_server);
 
@@ -17,11 +21,15 @@ pub const Method = enum {
     Unknown,
 };
 
+pub fn init(allocator: std.mem.Allocator, tui: *TUI) @This() {
+    return .{ .allocator = allocator, .tui = tui };
+}
+
 pub fn receive(
-    allocator: std.mem.Allocator,
+    server: *const @This(),
     message: []const u8
 ) Parser.Error!void {
-    var parser = Parser.init(allocator, message);
+    var parser = Parser.init(server.allocator, message);
     defer parser.deinit();
 
     try parser.expectNextToken(.ObjectBegin);
@@ -36,16 +44,16 @@ pub fn receive(
 
     const method = std.meta.stringToEnum(Method, method_str) orelse .Unknown;
     switch (method) {
-        .draw           => try handleDraw(&parser),
-        .draw_status    => try handleDrawStatus(&parser),
-        .menu_show      => try handleMenuShow(&parser),
-        .menu_select    => try handleMenuSelect(&parser),
-        .menu_hide      => try handleMenuHide(&parser),
-        .info_show      => try handleInfoShow(&parser),
-        .info_hide      => try handleInfoHide(&parser),
-        .set_cursor     => try handleSetCursor(&parser),
-        .set_ui_options => try handleSetUiOptions(&parser),
-        .refresh        => try handleRefresh(&parser),
+        .draw           => try server.handleDraw(&parser),
+        .draw_status    => try server.handleDrawStatus(&parser),
+        .menu_show      => try server.handleMenuShow(&parser),
+        .menu_select    => try server.handleMenuSelect(&parser),
+        .menu_hide      => try server.handleMenuHide(&parser),
+        .info_show      => try server.handleInfoShow(&parser),
+        .info_hide      => try server.handleInfoHide(&parser),
+        .set_cursor     => try server.handleSetCursor(&parser),
+        .set_ui_options => try server.handleSetUiOptions(&parser),
+        .refresh        => try server.handleRefresh(&parser),
         .Unknown        => {
             logger.warn("Unknown method: {s}\n", .{message});
             try parser.skipParams();
@@ -55,7 +63,7 @@ pub fn receive(
     try parser.expectNextToken(.ObjectEnd);
 }
 
-fn handleDraw(parser: *Parser) Parser.Error!void {
+fn handleDraw(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const lines = try parser.nextLines();
     const default_face = try parser.nextFace();
@@ -65,7 +73,7 @@ fn handleDraw(parser: *Parser) Parser.Error!void {
     logger.debug("draw(Lines#{}, {}, {})", .{lines.len, default_face, padding_face});
 }
 
-fn handleDrawStatus(parser: *Parser) Parser.Error!void {
+fn handleDrawStatus(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const status_line = try parser.nextLine();
     const mode_line = try parser.nextLine();
@@ -75,7 +83,7 @@ fn handleDrawStatus(parser: *Parser) Parser.Error!void {
     logger.debug("draw_status(Atoms#{}, Atoms#{}, {})", .{status_line.len, mode_line.len, default_face});
 }
 
-fn handleMenuShow(parser: *Parser) Parser.Error!void {
+fn handleMenuShow(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const items = try parser.nextLines();
     const anchor = try parser.nextCoord();
@@ -93,7 +101,7 @@ fn handleMenuShow(parser: *Parser) Parser.Error!void {
     });
 }
 
-fn handleMenuSelect(parser: *Parser) Parser.Error!void {
+fn handleMenuSelect(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const selected = try parser.nextInt(u32);
     try parser.expectNextToken(.ArrayEnd);
@@ -101,14 +109,14 @@ fn handleMenuSelect(parser: *Parser) Parser.Error!void {
     logger.debug("menu_select({})", .{selected});
 }
 
-fn handleMenuHide(parser: *Parser) Parser.Error!void {
+fn handleMenuHide(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     try parser.expectNextToken(.ArrayEnd);
 
     logger.debug("menu_hide()", .{});
 }
 
-fn handleInfoShow(parser: *Parser) Parser.Error!void {
+fn handleInfoShow(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const title = try parser.nextLine();
     const content = try parser.nextLines();
@@ -126,14 +134,14 @@ fn handleInfoShow(parser: *Parser) Parser.Error!void {
     });
 }
 
-fn handleInfoHide(parser: *Parser) Parser.Error!void {
+fn handleInfoHide(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     try parser.expectNextToken(.ArrayEnd);
 
     logger.debug("info_hide()", .{});
 }
 
-fn handleSetCursor(parser: *Parser) Parser.Error!void {
+fn handleSetCursor(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const mode = try parser.nextCursorMode();
     const coord = try parser.nextCoord();
@@ -142,7 +150,7 @@ fn handleSetCursor(parser: *Parser) Parser.Error!void {
     logger.debug("set_cursor({}, {})", .{mode, coord});
 }
 
-fn handleSetUiOptions(parser: *Parser) Parser.Error!void {
+fn handleSetUiOptions(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     try parser.expectNextToken(.ObjectBegin);
 
@@ -161,7 +169,7 @@ fn handleSetUiOptions(parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayEnd);
 }
 
-fn handleRefresh(parser: *Parser) Parser.Error!void {
+fn handleRefresh(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const force = try parser.nextBool();
     try parser.expectNextToken(.ArrayEnd);

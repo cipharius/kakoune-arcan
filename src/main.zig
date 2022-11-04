@@ -5,7 +5,7 @@ const TUI = @import("./TUI.zig");
 const logger = std.log.scoped(.main);
 
 pub fn main() !void {
-    var allocator = std.heap.c_allocator;
+    const allocator = std.heap.c_allocator;
 
     try std.os.sigaction(std.os.SIG.INT, &.{
         .handler = .{ .handler = handleSigint },
@@ -51,6 +51,8 @@ pub fn main() !void {
     var tui = TUI.init();
     defer tui.deinit();
 
+    const server = RpcServer.init(allocator, &tui);
+
     var line = std.ArrayList(u8).init(allocator);
     defer line.deinit();
 
@@ -63,7 +65,7 @@ pub fn main() !void {
             continue;
         }
 
-        RpcServer.receive(allocator, line.items) catch |err| {
+        server.receive(line.items) catch |err| {
             logger.warn("{}: {s}", .{err, line.items});
         };
     } else |err| {
