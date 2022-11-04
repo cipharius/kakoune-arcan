@@ -2,6 +2,8 @@ const std = @import("std");
 const RpcServer = @import("./RpcServer.zig");
 const TUI = @import("./TUI.zig");
 
+const logger = std.log.scoped(.main);
+
 pub fn main() !void {
     var allocator = std.heap.c_allocator;
 
@@ -61,7 +63,9 @@ pub fn main() !void {
             continue;
         }
 
-        try RpcServer.receive(allocator, line.items);
+        RpcServer.receive(allocator, line.items) catch |err| {
+            logger.warn("{}: {s}", .{err, line.items});
+        };
     } else |err| {
         if (err != error.EndOfStream) return err;
     }
