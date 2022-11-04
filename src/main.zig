@@ -1,5 +1,6 @@
 const std = @import("std");
 const RpcServer = @import("./RpcServer.zig");
+const TUI = @import("./TUI.zig");
 
 pub fn main() !void {
     var allocator = std.heap.c_allocator;
@@ -44,6 +45,9 @@ pub fn main() !void {
 
     var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
     var stdin_reader = stdin_stream.reader();
+
+    var tui = TUI.init();
+    defer tui.deinit();
 
     var line = std.ArrayList(u8).init(allocator);
     defer line.deinit();

@@ -7,7 +7,9 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("aka", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
-    exe.linkSystemLibrary("c");
+    exe.linkLibC();
+    exe.linkSystemLibrary("arcan-shmif");
+    exe.linkSystemLibrary("arcan-shmif-tui");
     exe.install();
 
     const run_cmd = exe.run();
