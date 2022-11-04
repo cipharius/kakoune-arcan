@@ -68,3 +68,7 @@ pub fn main() !void {
 }
 
 fn handleSigint(_: c_int) callconv(.C) void {}
+
+test {
+    _ = @import("./Parser.zig");
+}

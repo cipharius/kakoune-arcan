@@ -17,24 +17,12 @@ pub const Method = enum {
     Unknown,
 };
 
-pub const SetCursorMode = enum {
-    prompt,
-    buffer,
-    Unknown,
-};
-
 pub fn receive(
-    backing_allocator: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     message: []const u8
 ) Parser.Error!void {
-    var arena = std.heap.ArenaAllocator.init(backing_allocator);
-    defer arena.deinit();
-    var allocator = arena.allocator();
-
-    // Will be required for later
-    _ = allocator;
-
-    var parser = Parser.init(message);
+    var parser = Parser.init(allocator, message);
+    defer parser.deinit();
 
     try parser.expectNextToken(.ObjectBegin);
 
@@ -68,21 +56,41 @@ pub fn receive(
 }
 
 fn handleDraw(parser: *Parser) Parser.Error!void {
-    try parser.skipParams();
+    try parser.expectNextToken(.ArrayBegin);
+    const lines = try parser.nextLines();
+    const default_face = try parser.nextFace();
+    const padding_face = try parser.nextFace();
+    try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("draw(?)", .{});
+    logger.debug("draw(Lines#{}, {}, {})", .{lines.len, default_face, padding_face});
 }
 
 fn handleDrawStatus(parser: *Parser) Parser.Error!void {
-    try parser.skipParams();
+    try parser.expectNextToken(.ArrayBegin);
+    const status_line = try parser.nextLine();
+    const mode_line = try parser.nextLine();
+    const default_face = try parser.nextFace();
+    try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("draw_status(?)", .{});
+    logger.debug("draw_status(Atoms#{}, Atoms#{}, {})", .{status_line.len, mode_line.len, default_face});
 }
 
 fn handleMenuShow(parser: *Parser) Parser.Error!void {
-    try parser.skipParams();
+    try parser.expectNextToken(.ArrayBegin);
+    const items = try parser.nextLines();
+    const anchor = try parser.nextCoord();
+    const selected_item_face = try parser.nextFace();
+    const menu_face = try parser.nextFace();
+    const style = try parser.nextMenuStyle();
+    try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("menu_show(?)", .{});
+    logger.debug("menu_show(Lines#{}, {}, {}, {}, {})", .{
+        items.len,
+        anchor,
+        selected_item_face,
+        menu_face,
+        style,
+    });
 }
 
 fn handleMenuSelect(parser: *Parser) Parser.Error!void {
@@ -101,7 +109,21 @@ fn handleMenuHide(parser: *Parser) Parser.Error!void {
 }
 
 fn handleInfoShow(parser: *Parser) Parser.Error!void {
-    try parser.skipParams();
+    try parser.expectNextToken(.ArrayBegin);
+    const title = try parser.nextLine();
+    const content = try parser.nextLines();
+    const anchor = try parser.nextCoord();
+    const face = try parser.nextFace();
+    const style = try parser.nextInfoStyle();
+    try parser.expectNextToken(.ArrayEnd);
+
+    logger.debug("info_show(Atoms#{}, Lines#{}, {}, {}, {})", .{
+        title.len,
+        content.len,
+        anchor,
+        face,
+        style,
+    });
 }
 
 fn handleInfoHide(parser: *Parser) Parser.Error!void {
@@ -113,13 +135,8 @@ fn handleInfoHide(parser: *Parser) Parser.Error!void {
 
 fn handleSetCursor(parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
-
-    const mode = std.meta.stringToEnum(
-        SetCursorMode,
-        try parser.nextString()
-    ) orelse .Unknown;
+    const mode = try parser.nextCursorMode();
     const coord = try parser.nextCoord();
-
     try parser.expectNextToken(.ArrayEnd);
 
     logger.debug("set_cursor({}, {})", .{mode, coord});
@@ -131,10 +148,10 @@ fn handleSetUiOptions(parser: *Parser) Parser.Error!void {
 
     logger.debug("set_ui_options({{", .{});
     while (true) {
-        const key = switch (try parser.nextToken()) {
-            .String => |t| t.slice(parser.message, parser.cursor - 1),
-            .ObjectEnd => break,
-            else => return Parser.Error.UnexpectedToken,
+        const key = parser.nextString() catch |err| {
+            if (err != Parser.Error.UnexpectedToken) return err;
+            if (parser.last_token.? != .ObjectEnd) return err;
+            break;
         };
         const value = try parser.nextString();
         logger.debug("\"{s}\" : \"{s}\",", .{key, value});
