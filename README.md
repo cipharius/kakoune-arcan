@@ -10,7 +10,7 @@ Work in progress Kakoune frontend powered by Arcan TUI.
 ## Progress
 
 * [x] Wrap kakoune binary
-* [ ] Parse kakoune JSON RPC requests
+* [x] Parse kakoune JSON RPC requests
 * [ ] Render Arcan TUI
 * [ ] Implement user interaction
 
