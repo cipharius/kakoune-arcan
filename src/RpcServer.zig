@@ -21,6 +21,8 @@ pub const Method = enum {
     Unknown,
 };
 
+const Error = Parser.Error || TUI.Error;
+
 pub fn init(allocator: std.mem.Allocator, tui: *TUI) @This() {
     return .{ .allocator = allocator, .tui = tui };
 }
@@ -28,7 +30,7 @@ pub fn init(allocator: std.mem.Allocator, tui: *TUI) @This() {
 pub fn receive(
     server: *const @This(),
     message: []const u8
-) Parser.Error!void {
+) Error!void {
     var parser = Parser.init(server.allocator, message);
     defer parser.deinit();
 
@@ -63,14 +65,16 @@ pub fn receive(
     try parser.expectNextToken(.ObjectEnd);
 }
 
-fn handleDraw(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleDraw(server: *const @This(), parser: *Parser) Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const lines = try parser.nextLines();
     const default_face = try parser.nextFace();
     const padding_face = try parser.nextFace();
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("draw(Lines#{}, {}, {})", .{lines.len, default_face, padding_face});
+    logger.debug("draw msg: {s}", .{ parser.message });
+
+    try server.tui.draw(lines, default_face, padding_face);
 }
 
 fn handleDrawStatus(_: *const @This(), parser: *Parser) Parser.Error!void {
@@ -169,10 +173,10 @@ fn handleSetUiOptions(_: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayEnd);
 }
 
-fn handleRefresh(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleRefresh(server: *const @This(), parser: *Parser) Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const force = try parser.nextBool();
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("refresh({})", .{force});
+    try server.tui.refresh(force);
 }

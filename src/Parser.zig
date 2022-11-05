@@ -50,21 +50,42 @@ pub const CursorMode = enum {
     Unknown,
 };
 
+pub const ColorName = enum {
+    default,
+    black,
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white,
+    @"bright-black",
+    @"bright-red",
+    @"bright-green",
+    @"bright-yellow",
+    @"bright-blue",
+    @"bright-magenta",
+    @"bright-cyan",
+    @"bright-white",
+    Unknown,
+};
+
 pub const Color = union(enum) {
-    name: []const u8,
+    name: ColorName,
     rgb: struct { r: u8, g: u8, b: u8 },
 };
 
 pub const Face = struct {
-    fg: Color,
-    bg: Color,
-    underline: Color,
-    attributes: []Attribute,
+    fg: Color = .{ .name = .default },
+    bg: Color = .{ .name = .default },
+    underline: Color = .{ .name = .default },
+    attributes: std.EnumSet(Attribute) = .{},
 };
 
 pub const Atom = struct {
-    face: Face,
-    contents: []const u8,
+    face: Face = .{},
+    contents: [:0]const u8,
 };
 
 pub const Line = []Atom;
@@ -196,7 +217,9 @@ pub fn nextColor(parser: *@This()) Error!Color {
         } else if (std.mem.startsWith(u8, str, "#")) {
             break :block str[1..];
         } else {
-            return Color{ .name = str };
+            return Color{
+                .name = std.meta.stringToEnum(ColorName, str) orelse .Unknown
+            };
         }
     };
 
@@ -233,8 +256,6 @@ test "nextColor" {
 }
 
 pub fn nextFace(parser: *@This()) Error!Face {
-    const allocator = parser.arena.allocator();
-
     try parser.expectNextToken(.ObjectBegin);
 
     try parser.expectNextString("fg");
@@ -249,7 +270,7 @@ pub fn nextFace(parser: *@This()) Error!Face {
     try parser.expectNextString("attributes");
     try parser.expectNextToken(.ArrayBegin);
 
-    var attributes = std.ArrayList(Attribute).init(allocator);
+    var attributes = std.EnumSet(Attribute){};
 
     while (true) {
         const attribute = parser.nextAttribute() catch |err| {
@@ -257,7 +278,7 @@ pub fn nextFace(parser: *@This()) Error!Face {
             if (parser.last_token.? != .ArrayEnd) return err;
             break;
         };
-        attributes.append(attribute) catch return Error.OutOfMemory;
+        attributes.insert(attribute);
     }
 
     try parser.expectNextToken(.ObjectEnd);
@@ -266,7 +287,7 @@ pub fn nextFace(parser: *@This()) Error!Face {
         .fg = fg,
         .bg = bg,
         .underline = underline,
-        .attributes = attributes.toOwnedSlice(),
+        .attributes = attributes,
     };
 }
 
@@ -294,9 +315,9 @@ test "nextFace" {
         face.underline
     );
 
-    try std.testing.expectEqual(@as(usize, 2), face.attributes.len);
-    try std.testing.expectEqual(Attribute.bold, face.attributes[0]);
-    try std.testing.expectEqual(Attribute.underline, face.attributes[1]);
+    try std.testing.expectEqual(@as(usize, 2), face.attributes.count());
+    try std.testing.expect(face.attributes.contains(.bold));
+    try std.testing.expect(face.attributes.contains(.underline));
 }
 
 pub fn nextAtom(parser: *@This()) Error!Atom {
@@ -310,7 +331,15 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
 
     try parser.expectNextToken(.ObjectEnd);
 
-    return .{ .face = face, .contents = contents };
+    const allocator = parser.arena.allocator();
+    var contents_owned = allocator.allocSentinel(u8, contents.len, 0)
+        catch return Error.OutOfMemory;
+
+    for (contents) |char, i| {
+        contents_owned[i] = char;
+    }
+
+    return .{ .face = face, .contents = contents_owned };
 }
 
 pub fn nextLine(parser: *@This()) Error!Line {
@@ -347,9 +376,9 @@ test "nextLine" {
     try std.testing.expectEqualStrings("hello ", line[0].contents);
     try std.testing.expectEqualStrings("world!", line[1].contents);
 
-    try std.testing.expectEqual(@as(usize, 0), line[0].face.attributes.len);
-    try std.testing.expectEqual(@as(usize, 1), line[1].face.attributes.len);
-    try std.testing.expectEqual(Attribute.underline, line[1].face.attributes[0]);
+    try std.testing.expectEqual(@as(usize, 0), line[0].face.attributes.count());
+    try std.testing.expectEqual(@as(usize, 1), line[1].face.attributes.count());
+    try std.testing.expect(line[1].face.attributes.contains(.underline));
 }
 
 pub fn nextLines(parser: *@This()) Error![]Line {
