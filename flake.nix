@@ -21,8 +21,6 @@
       version = "0.10.0";
       src = zig-source.outPath;
 
-      # doBuild = false;
-
       installPhase = ''
         mkdir -p "$out/bin"
         cp zig "$out/bin"
@@ -42,6 +40,7 @@
       nativeBuildInputs = [
         zig_0_10_0
         pkgs.llvmPackages_latest.lldb
+        pkgs.pkg-config-unwrapped
       ];
     };
   };
