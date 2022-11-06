@@ -85,19 +85,17 @@ fn handleDraw(server: *const @This(), parser: *Parser) Error!void {
     const padding_face = try parser.nextFace();
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("draw msg: {s}", .{ parser.message });
-
     try server.tui.draw(lines, default_face, padding_face);
 }
 
-fn handleDrawStatus(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const status_line = try parser.nextLine();
     const mode_line = try parser.nextLine();
     const default_face = try parser.nextFace();
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("draw_status(Atoms#{}, Atoms#{}, {})", .{status_line.len, mode_line.len, default_face});
+    try server.tui.drawStatus(status_line, mode_line, default_face);
 }
 
 fn handleMenuShow(_: *const @This(), parser: *Parser) Parser.Error!void {

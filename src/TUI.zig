@@ -143,6 +143,44 @@ pub fn draw(
     }
 }
 
+pub fn drawStatus(
+    tui: *@This(),
+    status_line: Parser.Line,
+    mode_line: Parser.Line,
+    default_face: Parser.Face
+) Error!void {
+    const default_screen_attr = faceToScreenAttr(default_face);
+
+    var rows: usize = 0;
+    var cols: usize = 0;
+    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+
+    c.arcan_tui_eraseattr_region(
+        tui.context,
+        0, rows-1, cols, rows-1,
+        false, default_screen_attr
+    );
+    c.arcan_tui_move_to(tui.context, 0, rows);
+    tui.drawAtoms(status_line, default_face);
+
+    var mode_len: usize = 0;
+    for (mode_line) |atom| {
+        mode_len += atom.contents.len;
+    }
+
+    var status_len: usize = 0;
+    for (status_line) |atom| {
+        status_len += atom.contents.len;
+    }
+
+    const remaining = cols - status_len;
+
+    if (mode_len < remaining) {
+        c.arcan_tui_move_to(tui.context, cols - mode_len, rows-1);
+        tui.drawAtoms(mode_line, default_face);
+    }
+}
+
 pub fn refresh(tui: *@This(), force: bool) Error!void {
     if (force) c.arcan_tui_invalidate(tui.context);
     const result = c.arcan_tui_refresh(tui.context);
