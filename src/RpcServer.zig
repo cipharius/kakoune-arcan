@@ -40,6 +40,12 @@ pub fn sendKey(server: *const @This(), key: []const u8) Error!void {
     , .{key}) catch return Error.WriteFail;
 }
 
+pub fn sendResize(server: *const @This(), rows: usize, cols: usize) Error!void {
+    server.channel.writer().print(
+    \\{{ "jsonrpc": "2.0", "method": "resize", "params": [{}, {}] }}
+    , .{rows, cols}) catch return Error.WriteFail;
+}
+
 pub fn receive(
     server: *const @This(),
     message: []const u8

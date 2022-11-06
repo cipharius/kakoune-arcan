@@ -46,7 +46,7 @@ pub fn init() *@This() {
                 .query_label = null,
                 .recolor = null,
                 .reset = null,
-                .resized = null,
+                .resized = onResized,
                 .resize = null,
                 .seek_absolute = null,
                 .seek_relative = null,
@@ -204,6 +204,24 @@ fn onInputUtf8(
     }
 
     return false;
+}
+
+fn onResized(
+    _: ?*c.tui_context,
+    _: usize,
+    _: usize,
+    cols: usize,
+    rows: usize,
+    optTag: ?*anyopaque
+) callconv(.C) void {
+    const tag = if (optTag) |t| t else return;
+    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const server = if (tui.server) |s| s else return;
+
+    server.sendResize(rows, cols) catch |err| {
+        logger.err("Failed to send resize({})", .{err});
+        return;
+    };
 }
 
 fn drawAtoms(
