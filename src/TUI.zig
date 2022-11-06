@@ -199,7 +199,10 @@ fn onInputUtf8(
     const server = if (tui.server) |s| s else return false;
 
     if (optChars) |chars| {
-        server.sendKey(chars[0..len]) catch unreachable;
+        server.sendKey(chars[0..len]) catch |err| {
+            logger.err("Failed to send key({})", .{err});
+            return false;
+        };
         return true;
     }
 
