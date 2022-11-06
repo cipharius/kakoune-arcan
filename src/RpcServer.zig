@@ -4,6 +4,7 @@ const TUI = @import("./TUI.zig");
 
 allocator: std.mem.Allocator,
 tui: *TUI,
+channel: std.fs.File,
 
 const logger = std.log.scoped(.rpc_server);
 
@@ -21,10 +22,22 @@ pub const Method = enum {
     Unknown,
 };
 
-const Error = Parser.Error || TUI.Error;
+const Error = Parser.Error || TUI.Error || error {
+    WriteFail
+};
 
-pub fn init(allocator: std.mem.Allocator, tui: *TUI) @This() {
-    return .{ .allocator = allocator, .tui = tui };
+pub fn init(
+    allocator: std.mem.Allocator,
+    tui: *TUI,
+    channel: std.fs.File
+) @This() {
+    return .{ .allocator = allocator, .tui = tui, .channel = channel };
+}
+
+pub fn sendKey(server: *const @This(), key: []const u8) Error!void {
+    server.channel.writer().print(
+    \\{{ "jsonrpc": "2.0", "method": "keys", "params": ["{s}"] }}
+    , .{key}) catch return Error.WriteFail;
 }
 
 pub fn receive(

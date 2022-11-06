@@ -42,21 +42,27 @@ pub fn main() !void {
 
     var kak_process = std.ChildProcess.init(kak_args, allocator);
     kak_process.stdout_behavior = std.ChildProcess.StdIo.Pipe;
+    kak_process.stdin_behavior = std.ChildProcess.StdIo.Pipe;
     try kak_process.spawn();
     defer _ = kak_process.kill() catch {};
-
-    var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
-    var stdin_reader = stdin_stream.reader();
 
     var tui = TUI.init();
     defer tui.deinit();
 
-    const server = RpcServer.init(allocator, &tui);
+    var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
+    var stdin_reader = stdin_stream.reader();
 
-    var line = std.ArrayList(u8).init(allocator);
+    const channel = kak_process.stdin.?;
+    const server = RpcServer.init(allocator, tui, channel);
+
+    tui.registerServer(&server);
+    try tui.startEventThread();
+
+    // 4MB is an arbitrary incoming message buffer size
+    var line = try std.ArrayList(u8).initCapacity(allocator, 4 * 1024 * 1024);
     defer line.deinit();
 
-    while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', 4096))
+    while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', line.capacity))
     : (line.clearRetainingCapacity()) {
         if (line.items.len == 0) continue;
         if (line.items[0] != '{' or line.items[line.items.len-1] != '}') {

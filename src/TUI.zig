@@ -1,42 +1,107 @@
 const std = @import("std");
 const Parser = @import("./Parser.zig");
+const RpcServer = @import("./RpcServer.zig");
 const c = @cImport({
     @cInclude("arcan_shmif.h");
     @cInclude("arcan_tui.h");
 });
 
-context: *c.tui_context,
+const TUI = @This();
+
+context: ?*c.tui_context,
 callbacks: c.tui_cbcfg,
+event_thread: ?std.Thread = null,
+join_request: bool = false,
+server: ?*const RpcServer = null,
 
 const logger = std.log.scoped(.tui);
 
 pub const Error = error {
-    SyncFail
+    SyncFail,
+    SpawnFail,
+    NoServer,
 };
 
-pub fn init() @This() {
+pub fn init() *@This() {
     const connection = c.arcan_tui_open_display("Kakoune", "");
 
-    var tui = @This(){
-        .context = undefined,
-        .callbacks = std.mem.zeroes(c.tui_cbcfg),
+    const Static = struct {
+        var initialized = false;
+        var tui = TUI{
+            .context = undefined,
+            .callbacks = c.tui_cbcfg{
+                .tag = undefined,
+                .apaste = null,
+                .bchunk = null,
+                .cli_command = null,
+                .exec_state = null,
+                .geohint = null,
+                .input_alabel = null,
+                .input_key = null,
+                .input_label = null,
+                .input_misc = null,
+                .input_mouse_button = null,
+                .input_mouse_motion = null,
+                .input_utf8 = &onInputUtf8,
+                .query_label = null,
+                .recolor = null,
+                .reset = null,
+                .resized = null,
+                .resize = null,
+                .seek_absolute = null,
+                .seek_relative = null,
+                .state = null,
+                .substitute = null,
+                .subwindow = null,
+                .tick = null,
+                .utf8 = null,
+                .visibility = null,
+                .vpaste = null,
+            },
+        };
     };
 
-    tui.callbacks.tag = &tui;
-    tui.context = c.arcan_tui_setup(
+    if (Static.initialized) return &Static.tui;
+
+    Static.tui.callbacks.tag = &Static.tui;
+    Static.tui.context = c.arcan_tui_setup(
         connection,
         null,
-        &tui.callbacks,
+        &Static.tui.callbacks,
         @sizeOf(c.tui_cbcfg)
     ).?;
 
-    _ = c.arcan_tui_set_flags(tui.context, c.TUI_MOUSE_FULL | c.TUI_HIDE_CURSOR);
+    _ = c.arcan_tui_set_flags(Static.tui.context, c.TUI_MOUSE_FULL | c.TUI_HIDE_CURSOR);
 
-    return tui;
+    Static.initialized = true;
+    return &Static.tui;
 }
 
 pub fn deinit(tui: *@This()) void {
     c.arcan_tui_destroy(tui.context, null);
+
+    if (tui.event_thread) |event_thread| {
+        tui.join_request = true;
+        event_thread.join();
+    }
+}
+
+pub fn startEventThread(tui: *@This()) Error!void {
+    tui.event_thread = std.Thread.spawn(.{}, update, .{tui}) catch |err| {
+        logger.err("failed to start event_thread({})", .{err});
+        return Error.SpawnFail;
+    };
+}
+
+fn update(tui: *@This()) void {
+    while (!tui.join_request) {
+        _ = c.arcan_tui_process(&tui.context, 1, null, 0, -1);
+        std.time.sleep(1/30 * std.time.ns_per_s);
+    }
+}
+
+pub fn registerServer(tui: *@This(), server: *const RpcServer) void {
+    tui.server = server;
 }
 
 pub fn draw(
@@ -84,6 +149,25 @@ pub fn refresh(tui: *@This(), force: bool) Error!void {
     if (result < 0) return Error.SyncFail;
 }
 
+fn onInputUtf8(
+    _: ?*c.tui_context,
+    optChars: ?[*]const u8,
+    len: usize,
+    optTag: ?*anyopaque
+) callconv(.C) bool {
+    if (len > 4) return false;
+    const tag = if (optTag) |t| t else return false;
+    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const server = if (tui.server) |s| s else return false;
+
+    if (optChars) |chars| {
+        server.sendKey(chars[0..len]) catch unreachable;
+        return true;
+    }
+
+    return false;
+}
+
 fn drawAtoms(
     tui: *@This(),
     atoms: []const Parser.Atom,
@@ -104,26 +188,49 @@ const TuiScreenAttr = extern struct {
 
 fn faceToScreenAttr(face: Parser.Face) c.tui_screen_attr {
     const attr = face.attributes;
-    const aflags = @intCast(u16,
+    var aflags =
         (@boolToInt(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
         | (@boolToInt(attr.contains(.reverse)) * c.TUI_ATTR_INVERSE)
         | (@boolToInt(attr.contains(.blink)) * c.TUI_ATTR_BLINK)
         | (@boolToInt(attr.contains(.bold)) * c.TUI_ATTR_BOLD)
-        | (@boolToInt(attr.contains(.italic)) * c.TUI_ATTR_ITALIC)
-    );
+        | (@boolToInt(attr.contains(.italic)) * c.TUI_ATTR_ITALIC) ;
 
-    return @bitCast(c.tui_screen_attr,
+    var fc: [3]u8 = switch (face.fg) {
+        .rgb => |col| .{col.r, col.g, col.b},
+        .name => .{255, 255, 255},
+    };
+    var bc: [3]u8 = switch (face.bg) {
+        .rgb => |col| .{col.r, col.g, col.b},
+        .name => .{255, 255, 255},
+    };
+
+    if (face.fg == .name and face.bg == .name) {
+        aflags |= c.TUI_ATTR_COLOR_INDEXED;
+
+        if (face.fg.name == .default) {
+            fc[0] = c.TUI_COL_TEXT;
+        } else {
+            fc[0] = @as(u8, c.TUI_COL_TBASE) + (
+                @enumToInt(face.fg.name) - @enumToInt(Parser.ColorName.default)
+            );
+        }
+
+        if (face.bg.name == .default) {
+            bc[0] = c.TUI_COL_TEXT;
+        } else {
+            bc[0] = @as(u8, c.TUI_COL_TBASE) + (
+                @enumToInt(face.bg.name) - @enumToInt(Parser.ColorName.default)
+            );
+        }
+    }
+
+    return @bitCast(
+        c.tui_screen_attr,
         TuiScreenAttr{
-            .fc = switch (face.fg) {
-                .rgb => |col| .{col.r, col.g, col.b},
-                .name => .{0, 0, 0},
-            },
-            .bc = switch (face.bg) {
-                .rgb => |col| .{col.r, col.g, col.b},
-                .name => .{0, 0, 0},
-            },
-            .aflags = aflags,
-            .custom_id = 0,
+            .fc = fc,
+            .bc = bc,
+            .aflags = @intCast(u16, aflags),
+            .custom_id = 0
         }
     );
 }
