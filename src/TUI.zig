@@ -37,7 +37,7 @@ pub fn init() *@This() {
                 .exec_state = null,
                 .geohint = null,
                 .input_alabel = null,
-                .input_key = null,
+                .input_key = &onInputKey,
                 .input_label = null,
                 .input_misc = null,
                 .input_mouse_button = null,
@@ -199,6 +199,9 @@ fn onInputUtf8(
     const server = if (tui.server) |s| s else return false;
 
     if (optChars) |chars| {
+        // Leave special keys for tui_input_key
+        if (len == 1 and chars[0] <= 32) return false;
+
         server.sendKey(chars[0..len]) catch |err| {
             logger.err("Failed to send key({})", .{err});
             return false;
@@ -207,6 +210,54 @@ fn onInputUtf8(
     }
 
     return false;
+}
+
+fn onInputKey(
+    _: ?*c.tui_context,
+    symest: u32,
+    _: u8,
+    _: u8,
+    _: u16,
+    optTag: ?*anyopaque
+) callconv(.C) void {
+    const tag = if (optTag) |t| t else return;
+    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const server = if (tui.server) |s| s else return;
+
+    const key = switch (symest) {
+        c.TUIK_RETURN => "<ret>",
+        c.TUIK_SPACE => "<space>",
+        c.TUIK_TAB => "<tab>",
+        c.TUIK_BACKSPACE => "<backspace>",
+        c.TUIK_ESCAPE => "<esc>",
+        c.TUIK_UP => "<up>",
+        c.TUIK_DOWN => "<down>",
+        c.TUIK_LEFT => "<left>",
+        c.TUIK_RIGHT => "<right>",
+        c.TUIK_PAGEUP => "<pageup>",
+        c.TUIK_PAGEDOWN => "pagedown",
+        c.TUIK_HOME => "<home>",
+        c.TUIK_END => "<end>",
+        c.TUIK_INSERT => "<ins>",
+        c.TUIK_DELETE => "<del>",
+        c.TUIK_F1 => "<F1>",
+        c.TUIK_F2 => "<F2>",
+        c.TUIK_F3 => "<F3>",
+        c.TUIK_F4 => "<F4>",
+        c.TUIK_F5 => "<F5>",
+        c.TUIK_F6 => "<F6>",
+        c.TUIK_F7 => "<F7>",
+        c.TUIK_F8 => "<F8>",
+        c.TUIK_F9 => "<F9>",
+        c.TUIK_F10 => "<F10>",
+        c.TUIK_F12 => "<F12>",
+        else => return,
+    };
+
+    server.sendKey(key) catch |err| {
+        logger.err("Failed to send key({})", .{err});
+        return;
+    };
 }
 
 fn onResized(
