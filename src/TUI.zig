@@ -182,9 +182,14 @@ pub fn drawStatus(
 }
 
 pub fn refresh(tui: *@This(), force: bool) Error!void {
-    if (force) c.arcan_tui_invalidate(tui.context);
+    // Unnescessary for Arcan TUI
+    _ = force;
+
     const result = c.arcan_tui_refresh(tui.context);
-    if (result < 0) return Error.SyncFail;
+    if (result < 0) {
+        logger.err("refresh failed({})", .{std.os.errno(result)});
+        return Error.SyncFail;
+    }
 }
 
 fn onInputUtf8(
