@@ -35,9 +35,13 @@ pub fn init(
 }
 
 pub fn sendKey(server: *const @This(), key: []const u8) Error!void {
-    server.channel.writer().print(
-    \\{{ "jsonrpc": "2.0", "method": "keys", "params": ["{s}"] }}
-    , .{key}) catch return Error.WriteFail;
+    const writer = server.channel.writer();
+    writer.writeAll("{ \"jsonrpc\": \"2.0\", \"method\": \"keys\", \"params\": [")
+        catch return Error.WriteFail;
+    std.json.encodeJsonString(key, .{}, writer)
+        catch return Error.WriteFail;
+    writer.writeAll("] }")
+        catch return Error.WriteFail;
 }
 
 pub fn sendResize(server: *const @This(), rows: usize, cols: usize) Error!void {
