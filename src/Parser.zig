@@ -8,6 +8,8 @@ json_parser: json.StreamingParser = json.StreamingParser.init(),
 spare_token: ?json.Token = null,
 last_token: ?json.Token = null,
 
+const logger = std.log.scoped(.parser);
+
 pub const Coord = struct {
     line: usize,
     column: usize,
@@ -96,6 +98,7 @@ pub const Error = error {
     UnexpectedToken,
     UnknownMethod,
     OutOfMemory,
+    BadEscape,
 };
 
 pub fn init(allocator: std.mem.Allocator, message: []const u8) @This() {
@@ -337,6 +340,66 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
 
     for (contents) |char, i| {
         contents_owned[i] = char;
+    }
+
+    var slice = contents_owned;
+    var optIdx = std.mem.indexOfScalar(u8, slice, '\\');
+    while (optIdx) |idx| : (
+        optIdx = std.mem.indexOfScalar(u8, slice, '\\')
+    ) {
+        if (slice.len <= idx + 1) return Error.BadEscape;
+
+        switch (slice[idx + 1]) {
+            '\\', '"', '/' => {
+                for (slice[idx + 1..]) |ch,i| {
+                    slice[idx + i] = ch;
+                }
+
+                const end = slice.len - 1;
+                slice[end] = 0;
+                slice = slice[idx + 1..end:0];
+            },
+            't' => {
+                slice[idx] = '\t';
+
+                for (slice[idx + 2..]) |ch,i| {
+                    slice[idx + 1 + i] = ch;
+                }
+
+                const end = slice.len - 1;
+                slice[end] = 0;
+                slice = slice[idx + 1..end:0];
+            },
+            'n', 'r' => {
+                for (slice[idx + 2..]) |ch,i| {
+                    slice[idx + i] = ch;
+                }
+
+                const end = slice.len - 2;
+                slice[end] = 0;
+                slice = slice[idx + 2..end:0];
+            },
+            'u' => {
+                if (slice.len < idx + 6) return Error.BadEscape;
+                var value: u21 = std.fmt.parseInt(u21, slice[idx + 2..idx + 6], 16) catch return Error.ParseError;
+
+                // \u000a is used as special character for EOL marker
+                if (value == 0xa) {
+                    value = ' ';
+                }
+
+                const len = std.unicode.utf8Encode(value, slice[idx..idx + 5]) catch return Error.BadEscape;
+
+                for (slice[idx + 6..]) |ch,i| {
+                    slice[idx + len + i] = ch;
+                }
+
+                const end = slice.len - (6 - len);
+                slice[end] = 0;
+                slice = slice[idx + len..end:0];
+            },
+            else => return Error.BadEscape,
+        }
     }
 
     return .{ .face = face, .contents = contents_owned };
