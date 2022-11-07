@@ -110,7 +110,7 @@ pub fn draw(
     default_face: Parser.Face,
     padding_face: Parser.Face
 ) Error!void {
-    const default_screen_attr = faceToScreenAttr(default_face);
+    const default_screen_attr = tui.faceToScreenAttr(default_face);
 
     var rows: usize = 0;
     var cols: usize = 0;
@@ -131,7 +131,7 @@ pub fn draw(
     const face = mergeFaces(default_face, padding_face);
     c.arcan_tui_eraseattr_region(
         tui.context, 0, line_index, cols, rows,
-        false, faceToScreenAttr(face)
+        false, tui.faceToScreenAttr(face)
     );
 
     const padding_atom = .{ Parser.Atom{ .contents = "~" } };
@@ -149,7 +149,7 @@ pub fn drawStatus(
     mode_line: Parser.Line,
     default_face: Parser.Face
 ) Error!void {
-    const default_screen_attr = faceToScreenAttr(default_face);
+    const default_screen_attr = tui.faceToScreenAttr(default_face);
 
     var rows: usize = 0;
     var cols: usize = 0;
@@ -284,7 +284,7 @@ fn drawAtoms(
     default_face: Parser.Face
 ) void {
     for (atoms) |atom| {
-        var face = faceToScreenAttr(mergeFaces(default_face, atom.face));
+        var face = tui.faceToScreenAttr(mergeFaces(default_face, atom.face));
         _ = c.arcan_tui_writestr(tui.context, atom.contents.ptr, &face);
     }
 }
@@ -296,43 +296,48 @@ const TuiScreenAttr = extern struct {
     custom_id: u8,
 };
 
-fn faceToScreenAttr(face: Parser.Face) c.tui_screen_attr {
+fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
     const attr = face.attributes;
-    var aflags =
+    const aflags =
         (@boolToInt(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
         | (@boolToInt(attr.contains(.reverse)) * c.TUI_ATTR_INVERSE)
         | (@boolToInt(attr.contains(.blink)) * c.TUI_ATTR_BLINK)
         | (@boolToInt(attr.contains(.bold)) * c.TUI_ATTR_BOLD)
         | (@boolToInt(attr.contains(.italic)) * c.TUI_ATTR_ITALIC) ;
-
-    var fc: [3]u8 = switch (face.fg) {
+    const fc: [3]u8 = switch (face.fg) {
         .rgb => |col| .{col.r, col.g, col.b},
-        .name => .{255, 255, 255},
+        .name => |name| block: {
+            var value: [3]u8 = .{0, 0, 0};
+
+            if (name == .default) {
+                c.arcan_tui_get_color(tui.context, c.TUI_COL_TEXT, &value);
+            } else {
+                const index = @as(u8, c.TUI_COL_TBASE) + (
+                    @enumToInt(name) - @enumToInt(Parser.ColorName.black)
+                );
+                c.arcan_tui_get_color(tui.context, index, &value);
+            }
+
+            break :block value;
+        },
     };
-    var bc: [3]u8 = switch (face.bg) {
+    const bc: [3]u8 = switch (face.bg) {
         .rgb => |col| .{col.r, col.g, col.b},
-        .name => .{255, 255, 255},
+        .name => |name| block: {
+            var value: [3]u8 = .{0, 0, 0};
+
+            if (name == .default) {
+                c.arcan_tui_get_bgcolor(tui.context, c.TUI_COL_BG, &value);
+            } else {
+                const index = @as(u8, c.TUI_COL_TBASE) + (
+                    @enumToInt(name) - @enumToInt(Parser.ColorName.black)
+                );
+                c.arcan_tui_get_color(tui.context, index, &value);
+            }
+
+            break :block value;
+        },
     };
-
-    if (face.fg == .name and face.bg == .name) {
-        aflags |= c.TUI_ATTR_COLOR_INDEXED;
-
-        if (face.fg.name == .default) {
-            fc[0] = c.TUI_COL_TEXT;
-        } else {
-            fc[0] = @as(u8, c.TUI_COL_TBASE) + (
-                @enumToInt(face.fg.name) - @enumToInt(Parser.ColorName.default)
-            );
-        }
-
-        if (face.bg.name == .default) {
-            bc[0] = c.TUI_COL_TEXT;
-        } else {
-            bc[0] = @as(u8, c.TUI_COL_TBASE) + (
-                @enumToInt(face.bg.name) - @enumToInt(Parser.ColorName.default)
-            );
-        }
-    }
 
     return @bitCast(
         c.tui_screen_attr,
