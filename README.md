@@ -11,8 +11,10 @@ Work in progress Kakoune frontend powered by Arcan TUI.
 
 * [x] Wrap kakoune binary
 * [x] Parse kakoune JSON RPC requests
-* [ ] Render Arcan TUI
-* [ ] Implement user interaction
+* [x] Implement user interaction
+* [x] Render kakoune editor window
+* [ ] Render suggestions menu popup
+* [ ] Render info popup
 
 ## Design
 
