@@ -160,7 +160,7 @@ pub fn drawStatus(
         0, rows-1, cols, rows-1,
         false, default_screen_attr
     );
-    c.arcan_tui_move_to(tui.context, 0, rows);
+    c.arcan_tui_move_to(tui.context, 0, rows-1);
     tui.drawAtoms(status_line, default_face);
 
     var mode_len: usize = 0;
