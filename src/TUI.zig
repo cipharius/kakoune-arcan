@@ -199,9 +199,9 @@ fn onInputUtf8(
     optTag: ?*anyopaque
 ) callconv(.C) bool {
     if (len > 4) return false;
-    const tag = if (optTag) |t| t else return false;
+    const tag = optTag orelse return false;
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
-    const server = if (tui.server) |s| s else return false;
+    const server = tui.server orelse return false;
 
     if (optChars) |chars| {
         // Leave special keys for tui_input_key
@@ -225,9 +225,9 @@ fn onInputKey(
     _: u16,
     optTag: ?*anyopaque
 ) callconv(.C) void {
-    const tag = if (optTag) |t| t else return;
+    const tag = optTag orelse return;
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
-    const server = if (tui.server) |s| s else return;
+    const server = tui.server orelse return;
 
     const key = switch (symest) {
         c.TUIK_RETURN => "<ret>",
@@ -273,9 +273,9 @@ fn onResized(
     rows: usize,
     optTag: ?*anyopaque
 ) callconv(.C) void {
-    const tag = if (optTag) |t| t else return;
+    const tag = optTag orelse return;
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
-    const server = if (tui.server) |s| s else return;
+    const server = tui.server orelse return;
 
     server.sendResize(rows, cols) catch |err| {
         logger.err("Failed to send resize({})", .{err});
