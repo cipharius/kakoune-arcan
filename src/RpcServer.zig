@@ -108,7 +108,7 @@ fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
     try server.tui.status_view.update(status_line, mode_line, default_face);
 }
 
-fn handleMenuShow(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleMenuShow(server: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const items = try parser.nextLines();
     const anchor = try parser.nextCoord();
@@ -117,28 +117,28 @@ fn handleMenuShow(_: *const @This(), parser: *Parser) Parser.Error!void {
     const style = try parser.nextMenuStyle();
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("menu_show(Lines#{}, {}, {}, {}, {})", .{
-        items.len,
+    try server.tui.menu_view.update(
+        items,
         anchor,
         selected_item_face,
         menu_face,
-        style,
-    });
+        style
+    );
 }
 
-fn handleMenuSelect(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleMenuSelect(server: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     const selected = try parser.nextInt(u32);
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("menu_select({})", .{selected});
+    server.tui.menu_view.cursor = selected;
 }
 
-fn handleMenuHide(_: *const @This(), parser: *Parser) Parser.Error!void {
+fn handleMenuHide(server: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.ArrayBegin);
     try parser.expectNextToken(.ArrayEnd);
 
-    logger.debug("menu_hide()", .{});
+    server.tui.menu_view.active = false;
 }
 
 fn handleInfoShow(_: *const @This(), parser: *Parser) Parser.Error!void {

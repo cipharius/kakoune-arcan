@@ -3,12 +3,14 @@ const Parser = @import("./Parser.zig");
 const RpcServer = @import("./RpcServer.zig");
 const BufferView = @import("./BufferView.zig");
 const StatusView = @import("./StatusView.zig");
+const MenuView = @import("./MenuView.zig");
 const c = @import("./c.zig");
 
 const TUI = @This();
 
 buffer_view: BufferView,
 status_view: StatusView,
+menu_view: MenuView,
 context: ?*c.tui_context,
 callbacks: c.tui_cbcfg,
 event_thread: ?std.Thread = null,
@@ -32,6 +34,7 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
             .context = undefined,
             .buffer_view = undefined,
             .status_view = undefined,
+            .menu_view = undefined,
             .callbacks = c.tui_cbcfg{
                 .tag = undefined,
                 .apaste = null,
@@ -68,6 +71,7 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
 
     Static.tui.buffer_view = BufferView.init(allocator);
     Static.tui.status_view = StatusView.init(allocator);
+    Static.tui.menu_view = MenuView.init(allocator);
 
     Static.tui.callbacks.tag = &Static.tui;
     Static.tui.context = c.arcan_tui_setup(
@@ -114,6 +118,7 @@ pub fn registerServer(tui: *@This(), server: *const RpcServer) void {
 pub fn refresh(tui: *@This()) Error!void {
     tui.buffer_view.draw(tui);
     tui.status_view.draw(tui);
+    tui.menu_view.draw(tui);
     // TODO Draw menu
     // TODO Draw info
 
