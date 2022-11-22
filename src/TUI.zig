@@ -1,13 +1,14 @@
 const std = @import("std");
 const Parser = @import("./Parser.zig");
 const RpcServer = @import("./RpcServer.zig");
-const c = @cImport({
-    @cInclude("arcan_shmif.h");
-    @cInclude("arcan_tui.h");
-});
+const BufferView = @import("./BufferView.zig");
+const StatusView = @import("./StatusView.zig");
+const c = @import("./c.zig");
 
 const TUI = @This();
 
+buffer_view: BufferView,
+status_view: StatusView,
 context: ?*c.tui_context,
 callbacks: c.tui_cbcfg,
 event_thread: ?std.Thread = null,
@@ -22,13 +23,15 @@ pub const Error = error {
     NoServer,
 };
 
-pub fn init() *@This() {
+pub fn init(allocator: std.mem.Allocator) *@This() {
     const connection = c.arcan_tui_open_display("Kakoune", "");
 
     const Static = struct {
         var initialized = false;
         var tui = TUI{
             .context = undefined,
+            .buffer_view = undefined,
+            .status_view = undefined,
             .callbacks = c.tui_cbcfg{
                 .tag = undefined,
                 .apaste = null,
@@ -63,6 +66,9 @@ pub fn init() *@This() {
 
     if (Static.initialized) return &Static.tui;
 
+    Static.tui.buffer_view = BufferView.init(allocator);
+    Static.tui.status_view = StatusView.init(allocator);
+
     Static.tui.callbacks.tag = &Static.tui;
     Static.tui.context = c.arcan_tui_setup(
         connection,
@@ -78,6 +84,7 @@ pub fn init() *@This() {
 }
 
 pub fn deinit(tui: *@This()) void {
+    tui.buffer_view.deinit();
     c.arcan_tui_destroy(tui.context, null);
 
     if (tui.event_thread) |event_thread| {
@@ -104,86 +111,11 @@ pub fn registerServer(tui: *@This(), server: *const RpcServer) void {
     tui.server = server;
 }
 
-pub fn draw(
-    tui: *@This(),
-    lines: []const Parser.Line,
-    default_face: Parser.Face,
-    padding_face: Parser.Face
-) Error!void {
-    const default_screen_attr = tui.faceToScreenAttr(default_face);
-
-    var rows: usize = 0;
-    var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
-
-    var line_index: usize = 0;
-    for (lines) |line| {
-        c.arcan_tui_eraseattr_region(
-            tui.context, 0, line_index, cols, line_index,
-            false, default_screen_attr
-        );
-        c.arcan_tui_move_to(tui.context, 0, line_index);
-        tui.drawAtoms(line, default_face);
-        line_index += 1;
-    }
-
-    // Draw padding space
-    const face = mergeFaces(default_face, padding_face);
-    c.arcan_tui_eraseattr_region(
-        tui.context, 0, line_index, cols, rows,
-        false, tui.faceToScreenAttr(face)
-    );
-
-    const padding_atom = .{ Parser.Atom{ .contents = "~" } };
-
-    while (line_index < rows) {
-        c.arcan_tui_move_to(tui.context, 0, line_index);
-        tui.drawAtoms(&padding_atom, face);
-        line_index += 1;
-    }
-}
-
-pub fn drawStatus(
-    tui: *@This(),
-    status_line: Parser.Line,
-    mode_line: Parser.Line,
-    default_face: Parser.Face
-) Error!void {
-    const default_screen_attr = tui.faceToScreenAttr(default_face);
-
-    var rows: usize = 0;
-    var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
-
-    c.arcan_tui_eraseattr_region(
-        tui.context,
-        0, rows-1, cols, rows-1,
-        false, default_screen_attr
-    );
-    c.arcan_tui_move_to(tui.context, 0, rows-1);
-    tui.drawAtoms(status_line, default_face);
-
-    var mode_len: usize = 0;
-    for (mode_line) |atom| {
-        mode_len += atom.contents.len;
-    }
-
-    var status_len: usize = 0;
-    for (status_line) |atom| {
-        status_len += atom.contents.len;
-    }
-
-    const remaining = cols - status_len;
-
-    if (mode_len < remaining) {
-        c.arcan_tui_move_to(tui.context, cols - mode_len, rows-1);
-        tui.drawAtoms(mode_line, default_face);
-    }
-}
-
-pub fn refresh(tui: *@This(), force: bool) Error!void {
-    // Unnescessary for Arcan TUI
-    _ = force;
+pub fn refresh(tui: *@This()) Error!void {
+    tui.buffer_view.draw(tui);
+    tui.status_view.draw(tui);
+    // TODO Draw menu
+    // TODO Draw info
 
     const result = c.arcan_tui_refresh(tui.context);
     if (result < 0) {
@@ -277,13 +209,16 @@ fn onResized(
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
     const server = tui.server orelse return;
 
+    tui.refresh() catch |err| {
+        logger.err("Failed to refresh TUI({})", .{err});
+    };
+
     server.sendResize(rows, cols) catch |err| {
         logger.err("Failed to send resize({})", .{err});
-        return;
     };
 }
 
-fn drawAtoms(
+pub fn drawAtoms(
     tui: *@This(),
     atoms: []const Parser.Atom,
     default_face: Parser.Face
@@ -301,7 +236,7 @@ const TuiScreenAttr = extern struct {
     custom_id: u8,
 };
 
-fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
+pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
     const attr = face.attributes;
     const aflags =
         (@boolToInt(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
@@ -373,7 +308,7 @@ fn chooseColor(
     };
 }
 
-fn mergeFaces(base: Parser.Face, face: Parser.Face) Parser.Face {
+pub fn mergeFaces(base: Parser.Face, face: Parser.Face) Parser.Face {
     return .{
         .fg = chooseColor(base, face, base.fg, face.fg, .final_fg),
         .bg = chooseColor(base, face, base.bg, face.bg, .final_bg),

@@ -95,7 +95,7 @@ fn handleDraw(server: *const @This(), parser: *Parser) Error!void {
     const padding_face = try parser.nextFace();
     try parser.expectNextToken(.ArrayEnd);
 
-    try server.tui.draw(lines, default_face, padding_face);
+    try server.tui.buffer_view.update(lines, default_face, padding_face);
 }
 
 fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
@@ -105,7 +105,7 @@ fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
     const default_face = try parser.nextFace();
     try parser.expectNextToken(.ArrayEnd);
 
-    try server.tui.drawStatus(status_line, mode_line, default_face);
+    try server.tui.status_view.update(status_line, mode_line, default_face);
 }
 
 fn handleMenuShow(_: *const @This(), parser: *Parser) Parser.Error!void {
@@ -196,8 +196,8 @@ fn handleSetUiOptions(_: *const @This(), parser: *Parser) Parser.Error!void {
 
 fn handleRefresh(server: *const @This(), parser: *Parser) Error!void {
     try parser.expectNextToken(.ArrayBegin);
-    const force = try parser.nextBool();
+    _ = try parser.nextToken(); // Force flag not required for Arcan TUI
     try parser.expectNextToken(.ArrayEnd);
 
-    try server.tui.refresh(force);
+    try server.tui.refresh();
 }

@@ -46,7 +46,7 @@ pub fn main() !void {
     try kak_process.spawn();
     defer _ = kak_process.kill() catch {};
 
-    var tui = TUI.init();
+    var tui = TUI.init(allocator);
     defer tui.deinit();
 
     var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
