@@ -58,11 +58,11 @@ pub fn main() !void {
     tui.registerServer(&server);
     try tui.startEventThread();
 
-    // 4MB is an arbitrary incoming message buffer size
-    var line = try std.ArrayList(u8).initCapacity(allocator, 4 * 1024 * 1024);
+    var line = std.ArrayList(u8).init(allocator);
     defer line.deinit();
 
-    while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', line.capacity))
+    const max_size = 100 * 1024 * 1024; // 100 MiB line limit
+    while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', max_size))
     : (line.clearRetainingCapacity()) {
         if (line.items.len == 0) continue;
         if (line.items[0] != '{' or line.items[line.items.len-1] != '}') {
