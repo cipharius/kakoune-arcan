@@ -89,6 +89,8 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
 
 pub fn deinit(tui: *@This()) void {
     tui.buffer_view.deinit();
+    tui.status_view.deinit();
+    tui.menu_view.deinit();
     c.arcan_tui_destroy(tui.context, null);
 
     if (tui.event_thread) |event_thread| {
