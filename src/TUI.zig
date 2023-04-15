@@ -25,6 +25,22 @@ pub const Error = error {
     NoServer,
 };
 
+pub const KeyMod = enum(u16) {
+    none   = 0x0000,
+    lshift = 0x0001,
+    rshift = 0x0002,
+    lctrl  = 0x0040,
+    rctrl  = 0x0080,
+    lalt   = 0x0100,
+    ralt   = 0x0200,
+    lmeta  = 0x0400,
+    rmeta  = 0x0800,
+    num    = 0x1000,
+    caps   = 0x2000,
+    mode   = 0x4000,
+    repeat = 0x8000
+};
+
 pub fn init(allocator: std.mem.Allocator) *@This() {
     const connection = c.arcan_tui_open_display("Kakoune", "");
 
@@ -144,7 +160,9 @@ fn onInputUtf8(
 
     if (optChars) |chars| {
         // Leave special keys for tui_input_key
-        if (len == 1 and chars[0] <= 32) return false;
+        if (len == 1 and chars[0] <= 32 or chars[0] == 127) return false;
+        // Leave upper case letters for tui_input_key to access modifiers
+        if (len == 1 and chars[0] >= 65 and chars[0] <= 90) return false;
 
         server.sendKey(chars[0..len]) catch |err| {
             logger.err("Failed to send key({})", .{err});
@@ -160,45 +178,80 @@ fn onInputKey(
     _: ?*c.tui_context,
     symest: u32,
     _: u8,
-    _: u8,
+    mods: u16,
     _: u16,
     optTag: ?*anyopaque
 ) callconv(.C) void {
     const tag = optTag orelse return;
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
     const server = tui.server orelse return;
+    var key = [_]u8{0} ** 32;
 
-    const key = switch (symest) {
-        c.TUIK_RETURN => "<ret>",
-        c.TUIK_SPACE => "<space>",
-        c.TUIK_TAB => "<tab>",
-        c.TUIK_BACKSPACE => "<backspace>",
-        c.TUIK_ESCAPE => "<esc>",
-        c.TUIK_UP => "<up>",
-        c.TUIK_DOWN => "<down>",
-        c.TUIK_LEFT => "<left>",
-        c.TUIK_RIGHT => "<right>",
-        c.TUIK_PAGEUP => "<pageup>",
-        c.TUIK_PAGEDOWN => "pagedown",
-        c.TUIK_HOME => "<home>",
-        c.TUIK_END => "<end>",
-        c.TUIK_INSERT => "<ins>",
-        c.TUIK_DELETE => "<del>",
-        c.TUIK_F1 => "<F1>",
-        c.TUIK_F2 => "<F2>",
-        c.TUIK_F3 => "<F3>",
-        c.TUIK_F4 => "<F4>",
-        c.TUIK_F5 => "<F5>",
-        c.TUIK_F6 => "<F6>",
-        c.TUIK_F7 => "<F7>",
-        c.TUIK_F8 => "<F8>",
-        c.TUIK_F9 => "<F9>",
-        c.TUIK_F10 => "<F10>",
-        c.TUIK_F12 => "<F12>",
-        else => return,
-    };
+    key[0] = '<';
 
-    server.sendKey(key) catch |err| {
+    var i: u8 = 1;
+
+    if (mods & (@enumToInt(KeyMod.lalt) | @enumToInt(KeyMod.ralt)) != 0) {
+        key[i+0] = 'a';
+        key[i+1] = '-';
+        i += 2;
+    }
+
+    if (mods & (@enumToInt(KeyMod.lctrl) | @enumToInt(KeyMod.rctrl)) != 0) {
+        key[i+0] = 'c';
+        key[i+1] = '-';
+        i += 2;
+    }
+
+    if (mods & (@enumToInt(KeyMod.lshift) | @enumToInt(KeyMod.rshift)) != 0) {
+        key[i+0] = 's';
+        key[i+1] = '-';
+        i += 2;
+    }
+
+    if (symest > 32 and symest < 127) {
+        key[i] = @intCast(u8, symest);
+        i += 1;
+    } else {
+        const key_name = switch (symest) {
+            c.TUIK_RETURN => "ret",
+            c.TUIK_SPACE => "space",
+            c.TUIK_TAB => "tab",
+            c.TUIK_BACKSPACE => "backspace",
+            c.TUIK_ESCAPE => "esc",
+            c.TUIK_UP => "up",
+            c.TUIK_DOWN => "down",
+            c.TUIK_LEFT => "left",
+            c.TUIK_RIGHT => "right",
+            c.TUIK_PAGEUP => "pageup",
+            c.TUIK_PAGEDOWN => "pagedown",
+            c.TUIK_HOME => "home",
+            c.TUIK_END => "end",
+            c.TUIK_INSERT => "ins",
+            c.TUIK_DELETE => "del",
+            c.TUIK_F1 => "F1",
+            c.TUIK_F2 => "F2",
+            c.TUIK_F3 => "F3",
+            c.TUIK_F4 => "F4",
+            c.TUIK_F5 => "F5",
+            c.TUIK_F6 => "F6",
+            c.TUIK_F7 => "F7",
+            c.TUIK_F8 => "F8",
+            c.TUIK_F9 => "F9",
+            c.TUIK_F10 => "F10",
+            c.TUIK_F12 => "F12",
+            else => return
+        };
+
+        var i_0 = i;
+        while (i - i_0 < key_name.len) : (i += 1) {
+            key[i] = key_name[i - i_0];
+        }
+    }
+
+    key[i] = '>';
+
+    server.sendKey(key[0..i+1]) catch |err| {
         logger.err("Failed to send key({})", .{err});
         return;
     };
