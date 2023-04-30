@@ -68,7 +68,7 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
                 .query_label = null,
                 .recolor = null,
                 .reset = null,
-                .resized = onResized,
+                .resized = &onResized,
                 .resize = null,
                 .seek_absolute = null,
                 .seek_relative = null,
@@ -269,11 +269,7 @@ fn onResized(
     const tui = @ptrCast(*@This(), @alignCast(8, tag));
     const server = tui.server orelse return;
 
-    tui.refresh() catch |err| {
-        logger.err("Failed to refresh TUI({})", .{err});
-    };
-
-    server.sendResize(rows, cols) catch |err| {
+    server.sendResize(rows - 1, cols) catch |err| {
         logger.err("Failed to send resize({})", .{err});
     };
 }
