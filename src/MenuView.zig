@@ -84,7 +84,9 @@ pub fn update(
 pub fn draw(view: *MenuView, tui: *TUI) void {
     switch (view.style) {
         .prompt => view.drawPromptStyle(tui),
-        else => {} // TODO Render other styles
+        .@"inline" => view.drawInlineStyle(tui),
+        .search => {}, // TODO Figure out what is search menu
+        .Unknown => {},
     }
 }
 
@@ -169,6 +171,89 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
         menu_rows,
         page_cursor,
         max_cols * menu_rows,
+        view.items.items.len
+    );
+}
+
+pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
+    const max_rows: usize = 10;
+    if (!view.active) return;
+
+    var max_item_width: usize = 0;
+    for (view.items.items) |item| {
+        var item_width: usize = 0;
+        for (item) |atom| {
+            item_width += std.unicode.utf8CountCodepoints(atom.contents) catch 0;
+        }
+        max_item_width = @max(max_item_width, item_width);
+    }
+    if (max_item_width == 0) return;
+
+    var rows: usize = 0;
+    var cols: usize = 0;
+    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+
+    const rows_above = view.anchor.line;
+    const rows_below = (rows - 1) - (view.anchor.line + 1);
+    const menu_rows = @min(
+        view.items.items.len,
+        @min(max_rows, @max(rows_below, rows_above))
+    );
+    const place_below = rows_below >= menu_rows or rows_below > rows_above;
+
+    const x0: usize =
+        if (max_item_width <= cols) @min(view.anchor.column, cols - max_item_width - 1)
+        else 0;
+    const y0: usize =
+        if (place_below) view.anchor.line + 1
+        else view.anchor.line - menu_rows;
+    const x1: usize = @min(view.anchor.column + max_item_width, cols - 1);
+    const y1: usize = if (place_below) view.anchor.line + menu_rows
+                      else view.anchor.line - 1;
+
+    c.arcan_tui_eraseattr_region(
+        tui.context, x0, y0, x1, y1,
+        false, tui.faceToScreenAttr(view.menu_face)
+    );
+
+    const current_page: usize = @divFloor(
+        view.cursor % view.items.items.len,
+        menu_rows
+    );
+    const total_pages: usize = @divFloor(
+        view.items.items.len,
+        menu_rows
+    ) + 1;
+    std.debug.print("current: {};\ttotal: {}\n", .{current_page, total_pages});
+
+    const page_cursor: usize = current_page * menu_rows;
+    var i: usize = 0;
+    const n = @min(menu_rows, view.items.items.len - page_cursor);
+    while (i < n) : (i += 1) {
+        const item = view.items.items[page_cursor + i];
+        const row = i % max_rows;
+
+        const face =
+            if (page_cursor + i == view.cursor) view.selected_item_face
+            else view.menu_face;
+
+        c.arcan_tui_eraseattr_region(
+            tui.context,
+            x0, y0 + row,
+            x1 - 1, y0 + row,
+            false, tui.faceToScreenAttr(face)
+        );
+
+        c.arcan_tui_move_to(tui.context, x0, y0 + row);
+
+        tui.drawAtoms(item, face);
+    }
+
+    view.drawScrollbar(
+        tui, x1, y0,
+        menu_rows,
+        page_cursor,
+        menu_rows,
         view.items.items.len
     );
 }
