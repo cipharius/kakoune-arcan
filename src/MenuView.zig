@@ -96,7 +96,10 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
     var cols: usize = 0;
     c.arcan_tui_dimensions(tui.context, &rows, &cols);
 
-    const menu_rows = std.math.min(view.items.items.len, max_rows);
+    const menu_rows = @min(
+        view.items.items.len,
+        @min(rows - 1, max_rows)
+    );
 
     const x0: usize = 0;
     const y0: usize = rows - 1 - menu_rows;
@@ -123,25 +126,19 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
 
     const current_page: usize = @divFloor(
         view.cursor,
-        max_cols * max_rows
+        max_cols * menu_rows
     );
-    const total_pages: usize = @divFloor(
-        view.items.items.len,
-        max_cols * max_rows
-    ) + 1;
 
-    view.drawScrollbar(tui, x1, y0, menu_rows, current_page, total_pages);
-
-    const page_cursor: usize = current_page * max_cols * max_rows;
+    const page_cursor: usize = current_page * max_cols * menu_rows;
     var i: usize = 0;
-    const n = std.math.min(
-        max_cols * max_rows,
+    const n = @min(
+        max_cols * menu_rows,
         view.items.items.len - page_cursor
     );
     while (i < n) : (i += 1) {
         const item = view.items.items[page_cursor + i];
-        const row = i % max_rows;
-        const column = @divTrunc(i, max_rows);
+        const row = i % menu_rows;
+        const column = @divTrunc(i, menu_rows);
 
         if (column == max_cols) break;
 
@@ -166,6 +163,14 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
 
         tui.drawAtoms(item, face);
     }
+
+    view.drawScrollbar(
+        tui, x1, y0,
+        menu_rows,
+        page_cursor,
+        max_cols * menu_rows,
+        view.items.items.len
+    );
 }
 
 fn drawScrollbar(
@@ -174,24 +179,36 @@ fn drawScrollbar(
     x: usize,
     y: usize,
     rows: usize,
-    current_page: usize,
-    total_pages: usize
+    cursor: usize,
+    page_items: usize,
+    total_items: usize
 ) void {
     var face = tui.faceToScreenAttr(view.menu_face);
 
-    const offset: usize =
-        if (total_pages <= 1) 0
-        else @floatToInt(usize, @intToFloat(f32, rows) * (@intToFloat(f32, current_page) / @intToFloat(f32, total_pages - 1)));
     const width: usize =
-        if (total_pages <= 1) rows
-        else @floatToInt(usize, @intToFloat(f32, rows) * (@intToFloat(f32, 1) / @intToFloat(f32, total_pages - 1)));
+        if (total_items <= 1) rows
+        else @floatToInt(usize,
+            @intToFloat(f32, rows) *
+            @intToFloat(f32, page_items) /
+            @intToFloat(f32, total_items) +
+            0.5
+        );
+    const span = rows - width;
+    const offset: usize =
+        if (total_items <= 1) 0
+        else @floatToInt(usize,
+            @intToFloat(f32, span) *
+            @intToFloat(f32, cursor) /
+            @intToFloat(f32, total_items - total_items%page_items) +
+            0.5
+        );
 
     var i: usize = 0;
     while (i < rows) : (i += 1) {
         c.arcan_tui_move_to(tui.context, x, y + i);
 
         const codepoint =
-            if (i >= offset and i <= offset+width) @as(u32, 9608) // #9608 = █
+            if (i >= offset and i < offset+width) @as(u32, 9608) // #9608 = █
             else @as(u32, 9617); // #9617 = ░
 
         c.arcan_tui_write(tui.context, codepoint, &face);
