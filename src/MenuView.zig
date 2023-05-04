@@ -270,30 +270,35 @@ fn drawScrollbar(
 ) void {
     var face = tui.faceToScreenAttr(view.menu_face);
 
-    const width: usize =
+    const height =
         if (total_items <= 1) rows
-        else @floatToInt(usize,
-            @intToFloat(f32, rows) *
-            @intToFloat(f32, page_items) /
-            @intToFloat(f32, total_items) +
-            0.5
-        );
-    const span = rows - width;
-    const offset: usize =
-        if (total_items <= 1) 0
-        else @floatToInt(usize,
-            @intToFloat(f32, span) *
-            @intToFloat(f32, cursor) /
-            @intToFloat(f32, total_items - total_items%page_items) +
-            0.5
-        );
+        else @floatToInt(usize, @fabs(
+            @intToFloat(f32, rows)
+            * (
+                @intToFloat(f32, page_items)
+                / @intToFloat(f32, total_items)
+            )
+            + 0.5
+        ));
+    const span = rows -| height;
+    const remaining = total_items - total_items%page_items;
+    const offset =
+        if (remaining <= 1) 0
+        else @floatToInt(usize, @fabs(
+            @intToFloat(f32, span)
+            * (
+                @intToFloat(f32, cursor)
+                / @intToFloat(f32, remaining)
+            )
+            + 0.5
+        ));
 
     var i: usize = 0;
     while (i < rows) : (i += 1) {
         c.arcan_tui_move_to(tui.context, x, y + i);
 
         const codepoint =
-            if (i >= offset and i < offset+width) @as(u32, 9608) // #9608 = █
+            if (i >= offset and i < offset+height) @as(u32, 9608) // #9608 = █
             else @as(u32, 9617); // #9617 = ░
 
         c.arcan_tui_write(tui.context, codepoint, &face);
