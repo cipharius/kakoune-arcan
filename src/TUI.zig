@@ -4,6 +4,7 @@ const RpcServer = @import("./RpcServer.zig");
 const BufferView = @import("./BufferView.zig");
 const StatusView = @import("./StatusView.zig");
 const MenuView = @import("./MenuView.zig");
+const InfoView = @import("./InfoView.zig");
 const c = @import("./c.zig");
 
 const TUI = @This();
@@ -11,6 +12,7 @@ const TUI = @This();
 buffer_view: BufferView,
 status_view: StatusView,
 menu_view: MenuView,
+info_view: InfoView,
 context: ?*c.tui_context,
 callbacks: c.tui_cbcfg,
 event_thread: ?std.Thread = null,
@@ -51,6 +53,7 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
             .buffer_view = undefined,
             .status_view = undefined,
             .menu_view = undefined,
+            .info_view = undefined,
             .callbacks = c.tui_cbcfg{
                 .tag = undefined,
                 .apaste = null,
@@ -88,6 +91,7 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
     Static.tui.buffer_view = BufferView.init(allocator);
     Static.tui.status_view = StatusView.init(allocator);
     Static.tui.menu_view = MenuView.init(allocator);
+    Static.tui.info_view = InfoView.init(allocator);
 
     Static.tui.callbacks.tag = &Static.tui;
     Static.tui.context = c.arcan_tui_setup(
@@ -104,10 +108,12 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
 }
 
 pub fn deinit(tui: *@This()) void {
-    tui.buffer_view.deinit();
-    tui.status_view.deinit();
-    tui.menu_view.deinit();
     c.arcan_tui_destroy(tui.context, null);
+
+    tui.info_view.deinit();
+    tui.menu_view.deinit();
+    tui.status_view.deinit();
+    tui.buffer_view.deinit();
 
     if (tui.event_thread) |event_thread| {
         tui.join_request = true;
@@ -137,12 +143,13 @@ pub fn refresh(tui: *@This()) Error!void {
     tui.buffer_view.draw(tui);
     tui.status_view.draw(tui);
     tui.menu_view.draw(tui);
-    // TODO Draw menu
-    // TODO Draw info
+    tui.info_view.draw(tui);
 
     const result = c.arcan_tui_refresh(tui.context);
     if (result < 0) {
-        logger.err("refresh failed({})", .{std.os.errno(result)});
+        const err = std.posix.errno(result);
+        if (err == .AGAIN) return;
+        logger.err("refresh failed({})", .{err});
         return Error.SyncFail;
     }
 }
@@ -155,7 +162,7 @@ fn onInputUtf8(
 ) callconv(.C) bool {
     if (len > 4) return false;
     const tag = optTag orelse return false;
-    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const tui: *TUI = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return false;
 
     if (optChars) |chars| {
@@ -183,7 +190,7 @@ fn onInputKey(
     optTag: ?*anyopaque
 ) callconv(.C) void {
     const tag = optTag orelse return;
-    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const tui: *TUI = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return;
     var key = [_]u8{0} ** 32;
 
@@ -191,26 +198,26 @@ fn onInputKey(
 
     var i: u8 = 1;
 
-    if (mods & (@enumToInt(KeyMod.lalt) | @enumToInt(KeyMod.ralt)) != 0) {
+    if (mods & (@intFromEnum(KeyMod.lalt) | @intFromEnum(KeyMod.ralt)) != 0) {
         key[i+0] = 'a';
         key[i+1] = '-';
         i += 2;
     }
 
-    if (mods & (@enumToInt(KeyMod.lctrl) | @enumToInt(KeyMod.rctrl)) != 0) {
+    if (mods & (@intFromEnum(KeyMod.lctrl) | @intFromEnum(KeyMod.rctrl)) != 0) {
         key[i+0] = 'c';
         key[i+1] = '-';
         i += 2;
     }
 
-    if (mods & (@enumToInt(KeyMod.lshift) | @enumToInt(KeyMod.rshift)) != 0) {
+    if (mods & (@intFromEnum(KeyMod.lshift) | @intFromEnum(KeyMod.rshift)) != 0) {
         key[i+0] = 's';
         key[i+1] = '-';
         i += 2;
     }
 
     if (symest > 32 and symest < 127) {
-        key[i] = @intCast(u8, symest);
+        key[i] = @intCast(symest);
         i += 1;
     } else {
         const key_name = switch (symest) {
@@ -243,7 +250,7 @@ fn onInputKey(
             else => return
         };
 
-        var i_0 = i;
+        const i_0 = i;
         while (i - i_0 < key_name.len) : (i += 1) {
             key[i] = key_name[i - i_0];
         }
@@ -266,7 +273,7 @@ fn onResized(
     optTag: ?*anyopaque
 ) callconv(.C) void {
     const tag = optTag orelse return;
-    const tui = @ptrCast(*@This(), @alignCast(8, tag));
+    const tui: *TUI = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return;
 
     server.sendResize(rows - 1, cols) catch |err| {
@@ -295,11 +302,11 @@ const TuiScreenAttr = extern struct {
 pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
     const attr = face.attributes;
     const aflags =
-        (@boolToInt(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
-        | (@boolToInt(attr.contains(.reverse)) * c.TUI_ATTR_INVERSE)
-        | (@boolToInt(attr.contains(.blink)) * c.TUI_ATTR_BLINK)
-        | (@boolToInt(attr.contains(.bold)) * c.TUI_ATTR_BOLD)
-        | (@boolToInt(attr.contains(.italic)) * c.TUI_ATTR_ITALIC) ;
+        (@intFromBool(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
+        | (@intFromBool(attr.contains(.reverse)) * c.TUI_ATTR_INVERSE)
+        | (@intFromBool(attr.contains(.blink)) * c.TUI_ATTR_BLINK)
+        | (@intFromBool(attr.contains(.bold)) * c.TUI_ATTR_BOLD)
+        | (@intFromBool(attr.contains(.italic)) * c.TUI_ATTR_ITALIC) ;
     const fc: [3]u8 = switch (face.fg) {
         .rgb => |col| .{col.r, col.g, col.b},
         .name => |name| block: {
@@ -309,7 +316,7 @@ pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
                 c.arcan_tui_get_color(tui.context, c.TUI_COL_TEXT, &value);
             } else {
                 const index = @as(u8, c.TUI_COL_TBASE) + (
-                    @enumToInt(name) - @enumToInt(Parser.ColorName.black)
+                    @intFromEnum(name) - @intFromEnum(Parser.ColorName.black)
                 );
                 c.arcan_tui_get_color(tui.context, index, &value);
             }
@@ -326,7 +333,7 @@ pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
                 c.arcan_tui_get_bgcolor(tui.context, c.TUI_COL_BG, &value);
             } else {
                 const index = @as(u8, c.TUI_COL_TBASE) + (
-                    @enumToInt(name) - @enumToInt(Parser.ColorName.black)
+                    @intFromEnum(name) - @intFromEnum(Parser.ColorName.black)
                 );
                 c.arcan_tui_get_color(tui.context, index, &value);
             }
@@ -336,11 +343,10 @@ pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
     };
 
     return @bitCast(
-        c.tui_screen_attr,
         TuiScreenAttr{
             .fc = fc,
             .bc = bc,
-            .aflags = @intCast(u16, aflags),
+            .aflags = @intCast(aflags),
             .custom_id = 0
         }
     );

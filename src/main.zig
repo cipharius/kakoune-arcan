@@ -7,9 +7,9 @@ const logger = std.log.scoped(.main);
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
-    try std.os.sigaction(std.os.SIG.INT, &.{
+    try std.posix.sigaction(std.posix.SIG.INT, &.{
         .handler = .{ .handler = handleSigint },
-        .mask = std.os.empty_sigset,
+        .mask = std.posix.empty_sigset,
         .flags = 0,
     }, null);
 
@@ -29,20 +29,20 @@ pub fn main() !void {
     var kak_args: [][]const u8 = undefined;
     if (ui_override) {
         kak_args = try allocator.alloc([]const u8, args.len);
-        std.mem.copy([]const u8, kak_args[1..], args[1..]);
+        std.mem.copyForwards([]const u8, kak_args[1..], args[1..]);
         kak_args[0] = "kak";
     } else {
         kak_args = try allocator.alloc([]const u8, args.len + 2);
-        std.mem.copy([]const u8, kak_args[3..], args[1..]);
+        std.mem.copyForwards([]const u8, kak_args[3..], args[1..]);
         kak_args[0] = "kak";
         kak_args[1] = "-ui";
         kak_args[2] = "json";
     }
     defer allocator.free(kak_args);
 
-    var kak_process = std.ChildProcess.init(kak_args, allocator);
-    kak_process.stdout_behavior = std.ChildProcess.StdIo.Pipe;
-    kak_process.stdin_behavior = std.ChildProcess.StdIo.Pipe;
+    var kak_process = std.process.Child.init(kak_args, allocator);
+    kak_process.stdout_behavior = .Pipe;
+    kak_process.stdin_behavior = .Pipe;
     try kak_process.spawn();
     defer _ = kak_process.kill() catch {};
 

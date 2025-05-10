@@ -119,7 +119,7 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
         for (item) |atom| {
             item_width += std.unicode.utf8CountCodepoints(atom.contents) catch 0;
         }
-        max_item_width = std.math.max(max_item_width, item_width);
+        max_item_width = @max(max_item_width, item_width);
     }
     if (max_item_width == 0) return;
 
@@ -270,25 +270,25 @@ fn drawScrollbar(
 ) void {
     var face = tui.faceToScreenAttr(view.menu_face);
 
-    const height =
+    const height: usize =
         if (total_items <= 1) rows
-        else @floatToInt(usize, @fabs(
-            @intToFloat(f32, rows)
+        else @intFromFloat(@abs(
+            @as(f32, @floatFromInt(rows))
             * (
-                @intToFloat(f32, page_items)
-                / @intToFloat(f32, total_items)
+                @as(f32, @floatFromInt(page_items))
+                / @as(f32, @floatFromInt(total_items))
             )
             + 0.5
         ));
     const span = rows -| height;
     const remaining = total_items - total_items%page_items;
-    const offset =
+    const offset: usize =
         if (remaining <= 1) 0
-        else @floatToInt(usize, @fabs(
-            @intToFloat(f32, span)
+        else @intFromFloat(@abs(
+            @as(f32, @floatFromInt(span))
             * (
-                @intToFloat(f32, cursor)
-                / @intToFloat(f32, remaining)
+                @as(f32, @floatFromInt(cursor))
+                / @as(f32, @floatFromInt(remaining))
             )
             + 0.5
         ));

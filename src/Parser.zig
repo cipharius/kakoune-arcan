@@ -4,8 +4,7 @@ const json = std.json;
 message: []const u8,
 arena: std.heap.ArenaAllocator,
 cursor: usize = 0,
-json_parser: json.StreamingParser = json.StreamingParser.init(),
-spare_token: ?json.Token = null,
+json_parser: json.Scanner,
 last_token: ?json.Token = null,
 
 const logger = std.log.scoped(.parser);
@@ -102,13 +101,17 @@ pub const Error = error {
 };
 
 pub fn init(allocator: std.mem.Allocator, message: []const u8) @This() {
-    return .{
+    var parser: @This() = .{
         .message = message,
         .arena = std.heap.ArenaAllocator.init(allocator),
+        .json_parser = undefined,
     };
+    parser.json_parser = json.Scanner.initCompleteInput(parser.arena.allocator(), message);
+    return parser;
 }
 
 pub fn deinit(parser: *@This()) void {
+    // Also deinits json_parser
     parser.arena.deinit();
 }
 
@@ -118,8 +121,8 @@ pub fn skipParams(parser: *@This()) Error!void {
         const tok = try parser.nextToken();
 
         switch (tok) {
-            .ArrayBegin => d += 1,
-            .ArrayEnd => {
+            .array_begin => d += 1,
+            .array_end => {
                 d -= 1;
                 if (d == 0) break;
             },
@@ -129,37 +132,24 @@ pub fn skipParams(parser: *@This()) Error!void {
 }
 
 pub fn nextToken(parser: *@This()) Error!json.Token {
-    if (parser.spare_token) |token| {
-        parser.spare_token = null;
-        parser.last_token = token;
-        return token;
-    }
-
-    var toks: [2]?json.Token = .{null, null};
-    while (toks[0] == null) : (parser.cursor += 1) {
-        parser.json_parser.feed(
-            parser.message[parser.cursor],
-            &toks[0],
-            &toks[1]
-        ) catch return Error.ParseError;
-    }
-
-    if (toks[1] != null) {
-        parser.spare_token = toks[1];
-    }
-
-    parser.last_token = toks[0].?;
-    return toks[0].?;
+    const token = parser.json_parser.next() catch return Error.ParseError;
+    parser.last_token = token;
+    return token;
 }
 
 pub fn nextInt(parser: *@This(), comptime T: type) Error!T {
     const token = switch (try parser.nextToken()) {
-        .Number => |token| token,
-        else => return Error.UnexpectedToken,
+        .number => |token| token,
+        else => |t| {
+            logger.debug("unknown token: {} @ {s}:{}", .{t, @src().file, @src().line});
+            return Error.UnexpectedToken;
+        },
     };
-    if (!token.is_integer) return Error.UnexpectedToken;
-    const slice = token.slice(parser.message, parser.cursor - 1);
-    return std.fmt.parseInt(T, slice, 10) catch Error.ParseError;
+    if (!json.isNumberFormattedLikeAnInteger(token)) {
+        logger.debug("unexpected token: {s} @ {s}:{}", .{token, @src().file, @src().line});
+        return Error.UnexpectedToken;
+    }
+    return std.fmt.parseInt(T, token, 10) catch Error.ParseError;
 }
 
 pub fn nextBool(parser: *@This()) Error!bool {
@@ -171,14 +161,32 @@ pub fn nextBool(parser: *@This()) Error!bool {
 }
 
 pub fn nextString(parser: *@This()) Error![]const u8 {
-    return switch (try parser.nextToken()) {
-        .String => |token| token.slice(parser.message, parser.cursor - 1),
-        else => Error.UnexpectedToken,
-    };
+    const allocator = parser.arena.allocator();
+    var string = std.ArrayList(u8).init(allocator);
+
+    while (true) {
+        const token = try parser.nextToken();
+        switch (token) {
+            .partial_string => |str| try string.appendSlice(str),
+            inline .partial_string_escaped_1,
+            .partial_string_escaped_2,
+            .partial_string_escaped_3,
+            .partial_string_escaped_4,
+            => |bytes| try string.appendSlice(&bytes),
+            .string => |str| {
+                if (string.items.len == 0) {
+                    return str;
+                } else {
+                    return string.toOwnedSlice();
+                }
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
 }
 
 pub fn nextCoord(parser: *@This()) Error!Coord {
-    try parser.expectNextToken(.ObjectBegin);
+    try parser.expectNextToken(.object_begin);
 
     try parser.expectNextString("line");
     const line = try parser.nextInt(usize);
@@ -186,7 +194,7 @@ pub fn nextCoord(parser: *@This()) Error!Coord {
     try parser.expectNextString("column");
     const column = try parser.nextInt(usize);
 
-    try parser.expectNextToken(.ObjectEnd);
+    try parser.expectNextToken(.object_end);
 
     return .{ .line = line, .column = column };
 }
@@ -240,7 +248,7 @@ test "nextColor" {
     var parser = @This().init(std.testing.allocator, msg);
     defer parser.deinit();
 
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
 
     try std.testing.expectEqual(
         Color{ .rgb = .{.r = 0xff, .g = 0x00, .b = 0xaa} },
@@ -255,11 +263,11 @@ test "nextColor" {
     const namedColor = try parser.nextColor();
     try std.testing.expectEqualStrings("default", namedColor.name);
 
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 }
 
 pub fn nextFace(parser: *@This()) Error!Face {
-    try parser.expectNextToken(.ObjectBegin);
+    try parser.expectNextToken(.object_begin);
 
     try parser.expectNextString("fg");
     const fg = try parser.nextColor();
@@ -271,20 +279,20 @@ pub fn nextFace(parser: *@This()) Error!Face {
     const underline = try parser.nextColor();
 
     try parser.expectNextString("attributes");
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
 
     var attributes = std.EnumSet(Attribute){};
 
     while (true) {
         const attribute = parser.nextAttribute() catch |err| {
             if (err != Error.UnexpectedToken) return err;
-            if (parser.last_token.? != .ArrayEnd) return err;
+            if (parser.last_token.? != .array_end) return err;
             break;
         };
         attributes.insert(attribute);
     }
 
-    try parser.expectNextToken(.ObjectEnd);
+    try parser.expectNextToken(.object_end);
 
     return .{
         .fg = fg,
@@ -324,7 +332,7 @@ test "nextFace" {
 }
 
 pub fn nextAtom(parser: *@This()) Error!Atom {
-    try parser.expectNextToken(.ObjectBegin);
+    try parser.expectNextToken(.object_begin);
 
     try parser.expectNextString("face");
     const face = try parser.nextFace();
@@ -332,13 +340,13 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
     try parser.expectNextString("contents");
     const contents = try parser.nextString();
 
-    try parser.expectNextToken(.ObjectEnd);
+    try parser.expectNextToken(.object_end);
 
     const allocator = parser.arena.allocator();
     var contents_owned = allocator.allocSentinel(u8, contents.len, 0)
         catch return Error.OutOfMemory;
 
-    for (contents) |char, i| {
+    for (contents, 0..) |char, i| {
         contents_owned[i] = char;
     }
 
@@ -351,9 +359,7 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
 
         switch (slice[idx + 1]) {
             '\\', '"', '/' => {
-                for (slice[idx + 1..]) |ch,i| {
-                    slice[idx + i] = ch;
-                }
+                std.mem.copyForwards(u8, slice[idx..], slice[idx + 1..]);
 
                 const end = slice.len - 1;
                 slice[end] = 0;
@@ -361,19 +367,14 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
             },
             't' => {
                 slice[idx] = '\t';
-
-                for (slice[idx + 2..]) |ch,i| {
-                    slice[idx + 1 + i] = ch;
-                }
+                std.mem.copyForwards(u8, slice[idx + 1..], slice[idx + 2..]);
 
                 const end = slice.len - 1;
                 slice[end] = 0;
                 slice = slice[idx + 1..end:0];
             },
             'n', 'r' => {
-                for (slice[idx + 2..]) |ch,i| {
-                    slice[idx + i] = ch;
-                }
+                std.mem.copyForwards(u8, slice[idx..], slice[idx + 2..]);
 
                 const end = slice.len - 2;
                 slice[end] = 0;
@@ -390,8 +391,10 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
 
                 const len = std.unicode.utf8Encode(value, slice[idx..idx + 5]) catch return Error.BadEscape;
 
-                for (slice[idx + 6..]) |ch,i| {
-                    slice[idx + len + i] = ch;
+                if (len <= 6) {
+                    std.mem.copyForwards(u8, slice[idx + len..], slice[idx + 6..]);
+                } else {
+                    std.mem.copyBackwards(u8, slice[idx + len..], slice[idx + 6..]);
                 }
 
                 const end = slice.len - (6 - len);
@@ -406,7 +409,7 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
 }
 
 pub fn nextLine(parser: *@This()) Error!Line {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
 
     const allocator = parser.arena.allocator();
     var atoms = std.ArrayList(Atom).init(allocator);
@@ -414,7 +417,7 @@ pub fn nextLine(parser: *@This()) Error!Line {
     while (true) {
         const atom = parser.nextAtom() catch |err| {
             if (err != Error.UnexpectedToken) return err;
-            if (parser.last_token.? != .ArrayEnd) return err;
+            if (parser.last_token.? != .array_end) return err;
             break;
         };
         atoms.append(atom) catch return Error.OutOfMemory;
@@ -445,7 +448,7 @@ test "nextLine" {
 }
 
 pub fn nextLines(parser: *@This()) Error![]Line {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
 
     const allocator = parser.arena.allocator();
     var lines = std.ArrayList(Line).init(allocator);
@@ -453,7 +456,7 @@ pub fn nextLines(parser: *@This()) Error![]Line {
     while (true) {
         const line = parser.nextLine() catch |err| {
             if (err != Error.UnexpectedToken) return err;
-            if (parser.last_token.? != .ArrayEnd) return err;
+            if (parser.last_token.? != .array_end) return err;
             break;
         };
         lines.append(line) catch return Error.OutOfMemory;

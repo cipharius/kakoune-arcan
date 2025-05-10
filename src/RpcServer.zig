@@ -57,7 +57,7 @@ pub fn receive(
     var parser = Parser.init(server.allocator, message);
     defer parser.deinit();
 
-    try parser.expectNextToken(.ObjectBegin);
+    try parser.expectNextToken(.object_begin);
 
     try parser.expectNextString("jsonrpc");
     try parser.expectNextString("2.0");
@@ -85,37 +85,37 @@ pub fn receive(
         },
     }
 
-    try parser.expectNextToken(.ObjectEnd);
+    try parser.expectNextToken(.object_end);
 }
 
 fn handleDraw(server: *const @This(), parser: *Parser) Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     const lines = try parser.nextLines();
     const default_face = try parser.nextFace();
     const padding_face = try parser.nextFace();
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     try server.tui.buffer_view.update(lines, default_face, padding_face);
 }
 
 fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     const status_line = try parser.nextLine();
     const mode_line = try parser.nextLine();
     const default_face = try parser.nextFace();
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     try server.tui.status_view.update(status_line, mode_line, default_face);
 }
 
 fn handleMenuShow(server: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     const items = try parser.nextLines();
     const anchor = try parser.nextCoord();
     const selected_item_face = try parser.nextFace();
     const menu_face = try parser.nextFace();
     const style = try parser.nextMenuStyle();
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     try server.tui.menu_view.update(
         items,
@@ -127,63 +127,63 @@ fn handleMenuShow(server: *const @This(), parser: *Parser) Parser.Error!void {
 }
 
 fn handleMenuSelect(server: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     const selected = try parser.nextInt(u32);
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     server.tui.menu_view.cursor = selected;
 }
 
 fn handleMenuHide(server: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_begin);
+    try parser.expectNextToken(.array_end);
 
     server.tui.menu_view.active = false;
 }
 
-fn handleInfoShow(_: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+fn handleInfoShow(server: *const @This(), parser: *Parser) Parser.Error!void {
+    try parser.expectNextToken(.array_begin);
     const title = try parser.nextLine();
     const content = try parser.nextLines();
     const anchor = try parser.nextCoord();
     const face = try parser.nextFace();
     const style = try parser.nextInfoStyle();
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
-    logger.debug("info_show(Atoms#{}, Lines#{}, {}, {}, {})", .{
-        title.len,
-        content.len,
+    try server.tui.info_view.update(
+        title,
+        content,
         anchor,
         face,
-        style,
-    });
+        style
+    );
 }
 
-fn handleInfoHide(_: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
-    try parser.expectNextToken(.ArrayEnd);
+fn handleInfoHide(server: *const @This(), parser: *Parser) Parser.Error!void {
+    try parser.expectNextToken(.array_begin);
+    try parser.expectNextToken(.array_end);
 
-    logger.debug("info_hide()", .{});
+    server.tui.info_view.active = false;
 }
 
 fn handleSetCursor(_: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     const mode = try parser.nextCursorMode();
     const coord = try parser.nextCoord();
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     logger.debug("set_cursor({}, {})", .{mode, coord});
 }
 
 fn handleSetUiOptions(_: *const @This(), parser: *Parser) Parser.Error!void {
-    try parser.expectNextToken(.ArrayBegin);
-    try parser.expectNextToken(.ObjectBegin);
+    try parser.expectNextToken(.array_begin);
+    try parser.expectNextToken(.object_begin);
 
     logger.debug("set_ui_options({{", .{});
     while (true) {
         const key = parser.nextString() catch |err| {
             if (err != Parser.Error.UnexpectedToken) return err;
-            if (parser.last_token.? != .ObjectEnd) return err;
+            if (parser.last_token.? != .object_end) return err;
             break;
         };
         const value = try parser.nextString();
@@ -191,13 +191,13 @@ fn handleSetUiOptions(_: *const @This(), parser: *Parser) Parser.Error!void {
     }
     logger.debug("}})", .{});
 
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 }
 
 fn handleRefresh(server: *const @This(), parser: *Parser) Error!void {
-    try parser.expectNextToken(.ArrayBegin);
+    try parser.expectNextToken(.array_begin);
     _ = try parser.nextToken(); // Force flag not required for Arcan TUI
-    try parser.expectNextToken(.ArrayEnd);
+    try parser.expectNextToken(.array_end);
 
     try server.tui.refresh();
 }

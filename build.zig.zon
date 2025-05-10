@@ -1,0 +1,19 @@
+.{
+    .name = "kakoune-arcan",
+    .version = "0.0.1",
+    .minimum_zig_version = "0.13.0",
+
+    .dependencies = .{
+        .arcan = .{
+            .url = "https://arcan.tase.lv/tarball/cc955b5918/Arcan-cc955b5918.tar.gz",
+            .hash = "1220b4fdd669c8329ca0c3bf198dac8aff4549d1245e10e771d3e09cb927180128bd",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}
