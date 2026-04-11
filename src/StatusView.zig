@@ -1,7 +1,7 @@
 const std = @import("std");
+const arcan = @import("arcan");
 const Parser = @import("./Parser.zig");
-const TUI = @import("./TUI.zig");
-const c = @import("./c.zig");
+const TUI = @import("./Tui.zig");
 
 default_face: Parser.Face = .{},
 status_line: ?Parser.Line = null,
@@ -11,20 +11,21 @@ string_buffer: std.ArrayList(u8),
 
 const StatusView = @This();
 
-pub fn init(allocator: std.mem.Allocator) StatusView {
+pub fn init() StatusView {
     return .{
-        .atoms = std.ArrayList(Parser.Atom).init(allocator),
-        .string_buffer = std.ArrayList(u8).init(allocator),
+        .atoms = .empty,
+        .string_buffer = .empty,
     };
 }
 
-pub fn deinit(view: *StatusView) void {
-    view.atoms.deinit();
-    view.string_buffer.deinit();
+pub fn deinit(view: *StatusView, allocator: std.mem.Allocator) void {
+    view.atoms.deinit(allocator);
+    view.string_buffer.deinit(allocator);
 }
 
 pub fn update(
     view: *StatusView,
+    allocator: std.mem.Allocator,
     status_line: Parser.Line,
     mode_line: Parser.Line,
     default_face: Parser.Face
@@ -43,8 +44,8 @@ pub fn update(
         required_bytes += atom.contents.len + 1;
     }
 
-    try view.atoms.ensureTotalCapacity(required_atoms);
-    try view.string_buffer.ensureTotalCapacity(required_bytes);
+    try view.atoms.ensureTotalCapacity(allocator, required_atoms);
+    try view.string_buffer.ensureTotalCapacity(allocator, required_bytes);
 
     const l0 = view.atoms.items.len;
     for (status_line) |atom| {
@@ -81,14 +82,14 @@ pub fn draw(view: *StatusView, tui: *TUI) void {
 
     var rows: usize = 0;
     var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+    arcan.arcan_tui_dimensions(tui.context, &rows, &cols);
 
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context,
         0, rows-1, cols, rows-1,
         false, default_screen_attr
     );
-    c.arcan_tui_move_to(tui.context, 0, rows-1);
+    arcan.arcan_tui_move_to(tui.context, 0, rows-1);
     tui.drawAtoms(view.status_line.?, view.default_face);
 
     var mode_len: usize = 0;
@@ -104,7 +105,7 @@ pub fn draw(view: *StatusView, tui: *TUI) void {
     const remaining = cols - status_len;
 
     if (mode_len < remaining) {
-        c.arcan_tui_move_to(tui.context, cols - mode_len, rows-1);
+        arcan.arcan_tui_move_to(tui.context, cols - mode_len, rows-1);
         tui.drawAtoms(view.mode_line.?, view.default_face);
     }
 }

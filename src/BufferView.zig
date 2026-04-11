@@ -1,7 +1,7 @@
 const std = @import("std");
+const arcan = @import("arcan");
 const Parser = @import("./Parser.zig");
-const TUI = @import("./TUI.zig");
-const c = @import("./c.zig");
+const Tui = @import("./Tui.zig");
 
 default_face: Parser.Face = .{},
 padding_face: Parser.Face = .{},
@@ -11,22 +11,23 @@ string_buffer: std.ArrayList(u8),
 
 const BufferView = @This();
 
-pub fn init(allocator: std.mem.Allocator) BufferView {
+pub fn init() BufferView {
     return .{
-        .lines = std.ArrayList([]Parser.Atom).init(allocator),
-        .atoms = std.ArrayList(Parser.Atom).init(allocator),
-        .string_buffer = std.ArrayList(u8).init(allocator),
+        .lines = .empty,
+        .atoms = .empty,
+        .string_buffer = .empty,
     };
 }
 
-pub fn deinit(view: *BufferView) void {
-    view.lines.deinit();
-    view.atoms.deinit();
-    view.string_buffer.deinit();
+pub fn deinit(view: *BufferView, allocator: std.mem.Allocator) void {
+    view.lines.deinit(allocator);
+    view.atoms.deinit(allocator);
+    view.string_buffer.deinit(allocator);
 }
 
 pub fn update(
     view: *BufferView,
+    allocator: std.mem.Allocator,
     lines: []const Parser.Line,
     default_face: Parser.Face,
     padding_face: Parser.Face
@@ -48,9 +49,9 @@ pub fn update(
         }
     }
 
-    try view.lines.ensureTotalCapacity(lines.len);
-    try view.atoms.ensureTotalCapacity(required_atoms);
-    try view.string_buffer.ensureTotalCapacity(required_bytes);
+    try view.lines.ensureTotalCapacity(allocator, lines.len);
+    try view.atoms.ensureTotalCapacity(allocator, required_atoms);
+    try view.string_buffer.ensureTotalCapacity(allocator, required_bytes);
 
     for (lines) |line| {
         const l0 = view.atoms.items.len;
@@ -71,36 +72,36 @@ pub fn update(
     }
 }
 
-pub fn draw(view: *BufferView, tui: *TUI) void {
+pub fn draw(view: *BufferView, tui: *Tui) void {
     const default_screen_attr = tui.faceToScreenAttr(view.default_face);
 
     var rows: usize = 0;
     var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+    arcan.arcan_tui_dimensions(tui.context, &rows, &cols);
 
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context, 0, 0, cols, rows-1,
         false, default_screen_attr
     );
 
     var line_index: usize = 0;
     for (view.lines.items) |line| {
-        c.arcan_tui_move_to(tui.context, 0, line_index);
+        arcan.arcan_tui_move_to(tui.context, 0, line_index);
         tui.drawAtoms(line, view.default_face);
         line_index += 1;
     }
 
     // Draw padding space
-    const face = TUI.mergeFaces(view.default_face, view.padding_face);
+    const face = Tui.mergeFaces(view.default_face, view.padding_face);
     const padding_atom = .{ Parser.Atom{ .contents = "~" } };
 
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context, 0, line_index, cols, rows-1,
         false, tui.faceToScreenAttr(face)
     );
 
     while (line_index < rows) {
-        c.arcan_tui_move_to(tui.context, 0, line_index);
+        arcan.arcan_tui_move_to(tui.context, 0, line_index);
         tui.drawAtoms(&padding_atom, face);
         line_index += 1;
     }

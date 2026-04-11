@@ -1,20 +1,22 @@
 const std = @import("std");
 const RpcServer = @import("./RpcServer.zig");
-const TUI = @import("./TUI.zig");
+const TUI = @import("./Tui.zig");
 
 const logger = std.log.scoped(.main);
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
-    try std.posix.sigaction(std.posix.SIG.INT, &.{
+    std.posix.sigaction(std.posix.SIG.INT, &.{
         .handler = .{ .handler = handleSigint },
-        .mask = std.posix.empty_sigset,
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     }, null);
 
-    var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
-    const stdout_writer = stdout_buffer.writer();
+    const stdout = std.fs.File.stdout();
+    var write_buffer: [4096]u8 = undefined;
+    var stdout_buffer = stdout.writer(&write_buffer);
+    const stdout_writer = &stdout_buffer.interface;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -43,43 +45,50 @@ pub fn main() !void {
     var kak_process = std.process.Child.init(kak_args, allocator);
     kak_process.stdout_behavior = .Pipe;
     kak_process.stdin_behavior = .Pipe;
+    kak_process.stderr_behavior = .Inherit;
     try kak_process.spawn();
     defer _ = kak_process.kill() catch {};
 
-    var tui = TUI.init(allocator);
-    defer tui.deinit();
+    var tui = TUI.init();
+    defer tui.deinit(allocator);
 
-    var stdin_stream = std.io.bufferedReader(kak_process.stdout.?.reader());
-    var stdin_reader = stdin_stream.reader();
+    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_stream = kak_process.stdout.?.reader(&stdin_buffer);
+    var stdin_reader = &stdin_stream.interface;
 
-    const channel = kak_process.stdin.?;
-    const server = RpcServer.init(allocator, tui, channel);
+    var channel_buffer: [4096]u8 = undefined;
+    var channel = kak_process.stdin.?.writer(&channel_buffer);
+    var server = RpcServer.init(allocator, tui, &channel.interface);
 
     tui.registerServer(&server);
     try tui.startEventThread();
 
-    var line = std.ArrayList(u8).init(allocator);
-    defer line.deinit();
+    var line_buffer: std.Io.Writer.Allocating = .init(allocator);
+    defer line_buffer.deinit();
 
-    const max_size = 100 * 1024 * 1024; // 100 MiB line limit
-    while (stdin_reader.readUntilDelimiterArrayList(&line, '\n', max_size))
-    : (line.clearRetainingCapacity()) {
-        if (line.items.len == 0) continue;
-        if (line.items[0] != '{' or line.items[line.items.len-1] != '}') {
-            try stdout_writer.print("{s}\n", .{line.items});
-            try stdout_buffer.flush();
+    while (stdin_reader.streamDelimiter(&line_buffer.writer, '\n')) |bytes_read|
+    : (line_buffer.clearRetainingCapacity()) {
+        if (bytes_read == 0) continue;
+        stdin_reader.toss(1);
+        const line = line_buffer.written();
+
+        if (line[0] != '{' or line[line.len-1] != '}') {
+            try stdout_writer.print("{s}\n", .{line});
+            try stdout_writer.flush();
             continue;
         }
 
-        server.receive(line.items) catch |err| {
-            logger.warn("{}: {s}", .{err, line.items});
-        };
+        // server.receive(line.items) catch |err| {
+        //     logger.warn("{}: {s}", .{err, line.items});
+        // };
+        std.log.debug("Line: {s}", .{line});
+        try server.receive(line);
     } else |err| {
         if (err != error.EndOfStream) return err;
     }
 }
 
-fn handleSigint(_: c_int) callconv(.C) void {}
+fn handleSigint(_: c_int) callconv(.c) void {}
 
 test {
     _ = @import("./Parser.zig");

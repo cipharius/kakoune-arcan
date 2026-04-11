@@ -1,10 +1,12 @@
 const std = @import("std");
 const Parser = @import("./Parser.zig");
-const TUI = @import("./TUI.zig");
+const Tui = @import("./Tui.zig");
+
+const RpcServer = @This();
 
 allocator: std.mem.Allocator,
-tui: *TUI,
-channel: std.fs.File,
+tui: *Tui,
+channel: *std.io.Writer,
 
 const logger = std.log.scoped(.rpc_server);
 
@@ -22,36 +24,43 @@ pub const Method = enum {
     Unknown,
 };
 
-const Error = Parser.Error || TUI.Error || error {
+const Error = Parser.Error || Tui.Error || error {
     WriteFail
 };
 
 pub fn init(
     allocator: std.mem.Allocator,
-    tui: *TUI,
-    channel: std.fs.File
-) @This() {
+    tui: *Tui,
+    channel: *std.io.Writer,
+) RpcServer {
     return .{ .allocator = allocator, .tui = tui, .channel = channel };
 }
 
-pub fn sendKey(server: *const @This(), key: []const u8) Error!void {
-    const writer = server.channel.writer();
-    writer.writeAll("{ \"jsonrpc\": \"2.0\", \"method\": \"keys\", \"params\": [")
-        catch return Error.WriteFail;
-    std.json.encodeJsonString(key, .{}, writer)
-        catch return Error.WriteFail;
-    writer.writeAll("] }")
-        catch return Error.WriteFail;
+pub fn sendKey(server: *RpcServer, key: []const u8) Error!void {
+    var w = server.channel;
+
+    w.writeAll("{ \"jsonrpc\": \"2.0\", \"method\": \"keys\", \"params\": [")
+        catch |err| std.debug.panic("{}", .{err});//return Error.WriteFail;
+    std.json.Stringify.encodeJsonString(key, .{}, w)
+        catch |err| std.debug.panic("{}", .{err});// return Error.WriteFail;
+    w.writeAll("] }")
+        catch |err| std.debug.panic("{}", .{err});// return Error.WriteFail;
+
+   w.flush() catch |err| std.debug.panic("{}", .{err});// return Error.WriteFail;
 }
 
-pub fn sendResize(server: *const @This(), rows: usize, cols: usize) Error!void {
-    server.channel.writer().print(
+pub fn sendResize(server: *RpcServer, rows: usize, cols: usize) Error!void {
+    var w = server.channel;
+
+    w.print(
     \\{{ "jsonrpc": "2.0", "method": "resize", "params": [{}, {}] }}
     , .{rows, cols}) catch return Error.WriteFail;
+
+    w.flush() catch return Error.WriteFail;
 }
 
 pub fn receive(
-    server: *const @This(),
+    server: *const RpcServer,
     message: []const u8
 ) Error!void {
     var parser = Parser.init(server.allocator, message);
@@ -95,7 +104,7 @@ fn handleDraw(server: *const @This(), parser: *Parser) Error!void {
     const padding_face = try parser.nextFace();
     try parser.expectNextToken(.array_end);
 
-    try server.tui.buffer_view.update(lines, default_face, padding_face);
+    try server.tui.buffer_view.update(server.allocator, lines, default_face, padding_face);
 }
 
 fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
@@ -105,7 +114,7 @@ fn handleDrawStatus(server: *const @This(), parser: *Parser) Error!void {
     const default_face = try parser.nextFace();
     try parser.expectNextToken(.array_end);
 
-    try server.tui.status_view.update(status_line, mode_line, default_face);
+    try server.tui.status_view.update(server.allocator, status_line, mode_line, default_face);
 }
 
 fn handleMenuShow(server: *const @This(), parser: *Parser) Parser.Error!void {
@@ -118,6 +127,7 @@ fn handleMenuShow(server: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.array_end);
 
     try server.tui.menu_view.update(
+        server.allocator,
         items,
         anchor,
         selected_item_face,
@@ -151,6 +161,7 @@ fn handleInfoShow(server: *const @This(), parser: *Parser) Parser.Error!void {
     try parser.expectNextToken(.array_end);
 
     try server.tui.info_view.update(
+        server.allocator,
         title,
         content,
         anchor,

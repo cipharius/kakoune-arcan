@@ -1,7 +1,7 @@
 const std = @import("std");
+const arcan = @import("arcan");
 const Parser = @import("./Parser.zig");
-const TUI = @import("./TUI.zig");
-const c = @import("./c.zig");
+const Tui = @import("./Tui.zig");
 
 anchor: Parser.Coord = .{ .line = 0, .column = 0 },
 face: Parser.Face = .{},
@@ -14,22 +14,23 @@ active: bool = false,
 
 const InfoView = @This();
 
-pub fn init(allocator: std.mem.Allocator) InfoView {
+pub fn init() InfoView {
     return .{
-        .content = std.ArrayList([]Parser.Atom).init(allocator),
-        .atoms = std.ArrayList(Parser.Atom).init(allocator),
-        .string_buffer = std.ArrayList(u8).init(allocator),
+        .content = .empty,
+        .atoms = .empty,
+        .string_buffer = .empty,
     };
 }
 
-pub fn deinit(view: *InfoView) void {
-    view.content.deinit();
-    view.atoms.deinit();
-    view.string_buffer.deinit();
+pub fn deinit(view: *InfoView, allocator: std.mem.Allocator) void {
+    view.content.deinit(allocator);
+    view.atoms.deinit(allocator);
+    view.string_buffer.deinit(allocator);
 }
 
 pub fn update(
     view: *InfoView,
+    allocator: std.mem.Allocator,
     title: Parser.Line,
     content: []const Parser.Line,
     anchor: Parser.Coord,
@@ -60,9 +61,9 @@ pub fn update(
         }
     }
 
-    try view.content.ensureTotalCapacity(content.len);
-    try view.atoms.ensureTotalCapacity(required_atoms);
-    try view.string_buffer.ensureTotalCapacity(required_bytes);
+    try view.content.ensureTotalCapacity(allocator, content.len);
+    try view.atoms.ensureTotalCapacity(allocator, required_atoms);
+    try view.string_buffer.ensureTotalCapacity(allocator, required_bytes);
 
     for (title) |atom| {
         const s0 = view.string_buffer.items.len;
@@ -95,7 +96,7 @@ pub fn update(
     }
 }
 
-pub fn draw(view: *InfoView, tui: *TUI) void {
+pub fn draw(view: *InfoView, tui: *Tui) void {
     switch (view.style) {
         .prompt => view.drawPromptStyle(tui),
         .@"inline" => {},
@@ -108,12 +109,12 @@ pub fn draw(view: *InfoView, tui: *TUI) void {
 }
 
 const max_rows: usize = 10; // TODO Take from MenuView
-pub fn drawPromptStyle(view: *InfoView, tui: *TUI) void {
+pub fn drawPromptStyle(view: *InfoView, tui: *Tui) void {
     if (!view.active) return;
 
     var rows: usize = 0;
     var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+    arcan.arcan_tui_dimensions(tui.context, &rows, &cols);
 
     const y1 = rows -| max_rows -| 2;
     const y0 = y1 -| view.content.items.len -| 1;
@@ -138,7 +139,7 @@ pub fn drawPromptStyle(view: *InfoView, tui: *TUI) void {
     const box_height = y1 - y0 - 1;
 
     const face = tui.faceToScreenAttr(view.face);
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context,
         x0, y0,
         x1, y1,
@@ -146,44 +147,44 @@ pub fn drawPromptStyle(view: *InfoView, tui: *TUI) void {
     );
 
     // Draw box art
-    c.arcan_tui_move_to(tui.context, x0, y0);
-    c.arcan_tui_write(tui.context, @as(u32, 9581), &face); // ╭
-    c.arcan_tui_move_to(tui.context, x1, y0);
-    c.arcan_tui_write(tui.context, @as(u32, 9582), &face); // ╮
-    c.arcan_tui_move_to(tui.context, x1, y1);
-    c.arcan_tui_write(tui.context, @as(u32, 9583), &face); // ╯
-    c.arcan_tui_move_to(tui.context, x0, y1);
-    c.arcan_tui_write(tui.context, @as(u32, 9584), &face); // ╰
+    arcan.arcan_tui_move_to(tui.context, x0, y0);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9581), &face); // ╭
+    arcan.arcan_tui_move_to(tui.context, x1, y0);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9582), &face); // ╮
+    arcan.arcan_tui_move_to(tui.context, x1, y1);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9583), &face); // ╯
+    arcan.arcan_tui_move_to(tui.context, x0, y1);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9584), &face); // ╰
 
     var i: usize = 0;
     while (i <= x1 - x0 - 2) : (i += 1) {
-        c.arcan_tui_move_to(tui.context, x0 + i + 1, y0);
-        c.arcan_tui_write(tui.context, @as(u32, 9472), &face); // ─
-        c.arcan_tui_move_to(tui.context, x0 + i + 1, y1);
-        c.arcan_tui_write(tui.context, @as(u32, 9472), &face); // ─
+        arcan.arcan_tui_move_to(tui.context, x0 + i + 1, y0);
+        arcan.arcan_tui_write(tui.context, @as(u32, 9472), &face); // ─
+        arcan.arcan_tui_move_to(tui.context, x0 + i + 1, y1);
+        arcan.arcan_tui_write(tui.context, @as(u32, 9472), &face); // ─
     }
 
     i = 0;
     while (i <= y1 - y0 - 2) : (i += 1) {
-        c.arcan_tui_move_to(tui.context, x0, y0 + i + 1);
-        c.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
-        c.arcan_tui_move_to(tui.context, x1, y0 + i + 1);
-        c.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
+        arcan.arcan_tui_move_to(tui.context, x0, y0 + i + 1);
+        arcan.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
+        arcan.arcan_tui_move_to(tui.context, x1, y0 + i + 1);
+        arcan.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
     }
 
     const title_x = @divFloor(x0 + x1 - title_width, 2);
-    c.arcan_tui_move_to(tui.context, title_x, y0);
+    arcan.arcan_tui_move_to(tui.context, title_x, y0);
     tui.drawAtoms(view.title.?, view.face);
-    c.arcan_tui_move_to(tui.context, title_x - 1, y0);
-    c.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
-    c.arcan_tui_move_to(tui.context, title_x + title_width, y0);
-    c.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
+    arcan.arcan_tui_move_to(tui.context, title_x - 1, y0);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
+    arcan.arcan_tui_move_to(tui.context, title_x + title_width, y0);
+    arcan.arcan_tui_write(tui.context, @as(u32, 9474), &face); // │
 
     i = 0;
     while (i < @min(box_height, view.content.items.len)) : (i += 1) {
         const line = view.content.items[i];
         const line_end = @min(box_width, line.len);
-        c.arcan_tui_move_to(tui.context, x0 + 2, y0 + 1 + i);
+        arcan.arcan_tui_move_to(tui.context, x0 + 2, y0 + 1 + i);
         tui.drawAtoms(line[0..line_end], view.face);
     }
 }

@@ -1,23 +1,23 @@
 const std = @import("std");
+const arcan = @import("arcan");
 const Parser = @import("./Parser.zig");
 const RpcServer = @import("./RpcServer.zig");
 const BufferView = @import("./BufferView.zig");
 const StatusView = @import("./StatusView.zig");
 const MenuView = @import("./MenuView.zig");
 const InfoView = @import("./InfoView.zig");
-const c = @import("./c.zig");
 
-const TUI = @This();
+const Tui = @This();
 
 buffer_view: BufferView,
 status_view: StatusView,
 menu_view: MenuView,
 info_view: InfoView,
-context: ?*c.tui_context,
-callbacks: c.tui_cbcfg,
+context: ?*arcan.tui_context,
+callbacks: arcan.tui_cbcfg,
 event_thread: ?std.Thread = null,
 join_request: bool = false,
-server: ?*const RpcServer = null,
+server: ?*RpcServer = null,
 
 const logger = std.log.scoped(.tui);
 
@@ -43,18 +43,18 @@ pub const KeyMod = enum(u16) {
     repeat = 0x8000
 };
 
-pub fn init(allocator: std.mem.Allocator) *@This() {
-    const connection = c.arcan_tui_open_display("Kakoune", "");
+pub fn init() *Tui {
+    const connection = arcan.arcan_tui_open_display("Kakoune", "");
 
     const Static = struct {
         var initialized = false;
-        var tui = TUI{
+        var tui = Tui{
             .context = undefined,
             .buffer_view = undefined,
             .status_view = undefined,
             .menu_view = undefined,
             .info_view = undefined,
-            .callbacks = c.tui_cbcfg{
+            .callbacks = arcan.tui_cbcfg{
                 .tag = undefined,
                 .apaste = null,
                 .bchunk = null,
@@ -88,32 +88,32 @@ pub fn init(allocator: std.mem.Allocator) *@This() {
 
     if (Static.initialized) return &Static.tui;
 
-    Static.tui.buffer_view = BufferView.init(allocator);
-    Static.tui.status_view = StatusView.init(allocator);
-    Static.tui.menu_view = MenuView.init(allocator);
-    Static.tui.info_view = InfoView.init(allocator);
+    Static.tui.buffer_view = .init();
+    Static.tui.status_view = .init();
+    Static.tui.menu_view = .init();
+    Static.tui.info_view = .init();
 
     Static.tui.callbacks.tag = &Static.tui;
-    Static.tui.context = c.arcan_tui_setup(
+    Static.tui.context = arcan.arcan_tui_setup(
         connection,
         null,
         &Static.tui.callbacks,
-        @sizeOf(c.tui_cbcfg)
+        @sizeOf(arcan.tui_cbcfg)
     ).?;
 
-    _ = c.arcan_tui_set_flags(Static.tui.context, c.TUI_MOUSE_FULL | c.TUI_HIDE_CURSOR);
+    _ = arcan.arcan_tui_set_flags(Static.tui.context, arcan.TUI_MOUSE_FULL | arcan.TUI_HIDE_CURSOR);
 
     Static.initialized = true;
     return &Static.tui;
 }
 
-pub fn deinit(tui: *@This()) void {
-    c.arcan_tui_destroy(tui.context, null);
+pub fn deinit(tui: *Tui, allocator: std.mem.Allocator) void {
+    arcan.arcan_tui_destroy(tui.context, null);
 
-    tui.info_view.deinit();
-    tui.menu_view.deinit();
-    tui.status_view.deinit();
-    tui.buffer_view.deinit();
+    tui.info_view.deinit(allocator);
+    tui.menu_view.deinit(allocator);
+    tui.status_view.deinit(allocator);
+    tui.buffer_view.deinit(allocator);
 
     if (tui.event_thread) |event_thread| {
         tui.join_request = true;
@@ -121,31 +121,31 @@ pub fn deinit(tui: *@This()) void {
     }
 }
 
-pub fn startEventThread(tui: *@This()) Error!void {
+pub fn startEventThread(tui: *Tui) Error!void {
     tui.event_thread = std.Thread.spawn(.{}, update, .{tui}) catch |err| {
         logger.err("failed to start event_thread({})", .{err});
         return Error.SpawnFail;
     };
 }
 
-fn update(tui: *@This()) void {
+fn update(tui: *Tui) void {
     while (!tui.join_request) {
-        _ = c.arcan_tui_process(&tui.context, 1, null, 0, -1);
-        std.time.sleep(1/30 * std.time.ns_per_s);
+        _ = arcan.arcan_tui_process(&tui.context, 1, null, 0, -1);
+        std.Thread.sleep(33 * std.time.ns_per_us);
     }
 }
 
-pub fn registerServer(tui: *@This(), server: *const RpcServer) void {
+pub fn registerServer(tui: *Tui, server: *RpcServer) void {
     tui.server = server;
 }
 
-pub fn refresh(tui: *@This()) Error!void {
+pub fn refresh(tui: *Tui) Error!void {
     tui.buffer_view.draw(tui);
     tui.status_view.draw(tui);
     tui.menu_view.draw(tui);
     tui.info_view.draw(tui);
 
-    const result = c.arcan_tui_refresh(tui.context);
+    const result = arcan.arcan_tui_refresh(tui.context);
     if (result < 0) {
         const err = std.posix.errno(result);
         if (err == .AGAIN) return;
@@ -155,14 +155,14 @@ pub fn refresh(tui: *@This()) Error!void {
 }
 
 fn onInputUtf8(
-    _: ?*c.tui_context,
+    _: ?*arcan.tui_context,
     optChars: ?[*]const u8,
     len: usize,
     optTag: ?*anyopaque
-) callconv(.C) bool {
+) callconv(.c) bool {
     if (len > 4) return false;
     const tag = optTag orelse return false;
-    const tui: *TUI = @ptrCast(@alignCast(tag));
+    const tui: *Tui = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return false;
 
     if (optChars) |chars| {
@@ -182,15 +182,15 @@ fn onInputUtf8(
 }
 
 fn onInputKey(
-    _: ?*c.tui_context,
+    _: ?*arcan.tui_context,
     symest: u32,
     _: u8,
     mods: u16,
     _: u16,
     optTag: ?*anyopaque
-) callconv(.C) void {
+) callconv(.c) void {
     const tag = optTag orelse return;
-    const tui: *TUI = @ptrCast(@alignCast(tag));
+    const tui: *Tui = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return;
     var key = [_]u8{0} ** 32;
 
@@ -221,32 +221,32 @@ fn onInputKey(
         i += 1;
     } else {
         const key_name = switch (symest) {
-            c.TUIK_RETURN => "ret",
-            c.TUIK_SPACE => "space",
-            c.TUIK_TAB => "tab",
-            c.TUIK_BACKSPACE => "backspace",
-            c.TUIK_ESCAPE => "esc",
-            c.TUIK_UP => "up",
-            c.TUIK_DOWN => "down",
-            c.TUIK_LEFT => "left",
-            c.TUIK_RIGHT => "right",
-            c.TUIK_PAGEUP => "pageup",
-            c.TUIK_PAGEDOWN => "pagedown",
-            c.TUIK_HOME => "home",
-            c.TUIK_END => "end",
-            c.TUIK_INSERT => "ins",
-            c.TUIK_DELETE => "del",
-            c.TUIK_F1 => "F1",
-            c.TUIK_F2 => "F2",
-            c.TUIK_F3 => "F3",
-            c.TUIK_F4 => "F4",
-            c.TUIK_F5 => "F5",
-            c.TUIK_F6 => "F6",
-            c.TUIK_F7 => "F7",
-            c.TUIK_F8 => "F8",
-            c.TUIK_F9 => "F9",
-            c.TUIK_F10 => "F10",
-            c.TUIK_F12 => "F12",
+            arcan.TUIK_RETURN => "ret",
+            arcan.TUIK_SPACE => "space",
+            arcan.TUIK_TAB => "tab",
+            arcan.TUIK_BACKSPACE => "backspace",
+            arcan.TUIK_ESCAPE => "esc",
+            arcan.TUIK_UP => "up",
+            arcan.TUIK_DOWN => "down",
+            arcan.TUIK_LEFT => "left",
+            arcan.TUIK_RIGHT => "right",
+            arcan.TUIK_PAGEUP => "pageup",
+            arcan.TUIK_PAGEDOWN => "pagedown",
+            arcan.TUIK_HOME => "home",
+            arcan.TUIK_END => "end",
+            arcan.TUIK_INSERT => "ins",
+            arcan.TUIK_DELETE => "del",
+            arcan.TUIK_F1 => "F1",
+            arcan.TUIK_F2 => "F2",
+            arcan.TUIK_F3 => "F3",
+            arcan.TUIK_F4 => "F4",
+            arcan.TUIK_F5 => "F5",
+            arcan.TUIK_F6 => "F6",
+            arcan.TUIK_F7 => "F7",
+            arcan.TUIK_F8 => "F8",
+            arcan.TUIK_F9 => "F9",
+            arcan.TUIK_F10 => "F10",
+            arcan.TUIK_F12 => "F12",
             else => return
         };
 
@@ -265,15 +265,15 @@ fn onInputKey(
 }
 
 fn onResized(
-    _: ?*c.tui_context,
+    _: ?*arcan.tui_context,
     _: usize,
     _: usize,
     cols: usize,
     rows: usize,
     optTag: ?*anyopaque
-) callconv(.C) void {
+) callconv(.c) void {
     const tag = optTag orelse return;
-    const tui: *TUI = @ptrCast(@alignCast(tag));
+    const tui: *Tui = @ptrCast(@alignCast(tag));
     const server = tui.server orelse return;
 
     server.sendResize(rows - 1, cols) catch |err| {
@@ -282,13 +282,13 @@ fn onResized(
 }
 
 pub fn drawAtoms(
-    tui: *@This(),
+    tui: *Tui,
     atoms: []const Parser.Atom,
     default_face: Parser.Face
 ) void {
     for (atoms) |atom| {
         var face = tui.faceToScreenAttr(mergeFaces(default_face, atom.face));
-        _ = c.arcan_tui_writestr(tui.context, atom.contents.ptr, &face);
+        _ = arcan.arcan_tui_writestr(tui.context, atom.contents.ptr, &face);
     }
 }
 
@@ -299,26 +299,26 @@ const TuiScreenAttr = extern struct {
     custom_id: u8,
 };
 
-pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
+pub fn faceToScreenAttr(tui: *const Tui, face: Parser.Face) arcan.tui_screen_attr {
     const attr = face.attributes;
     const aflags =
-        (@intFromBool(attr.contains(.underline)) * c.TUI_ATTR_UNDERLINE)
-        | (@intFromBool(attr.contains(.reverse)) * c.TUI_ATTR_INVERSE)
-        | (@intFromBool(attr.contains(.blink)) * c.TUI_ATTR_BLINK)
-        | (@intFromBool(attr.contains(.bold)) * c.TUI_ATTR_BOLD)
-        | (@intFromBool(attr.contains(.italic)) * c.TUI_ATTR_ITALIC) ;
+        (@intFromBool(attr.contains(.underline)) * arcan.TUI_ATTR_UNDERLINE)
+        | (@intFromBool(attr.contains(.reverse)) * arcan.TUI_ATTR_INVERSE)
+        | (@intFromBool(attr.contains(.blink)) * arcan.TUI_ATTR_BLINK)
+        | (@intFromBool(attr.contains(.bold)) * arcan.TUI_ATTR_BOLD)
+        | (@intFromBool(attr.contains(.italic)) * arcan.TUI_ATTR_ITALIC) ;
     const fc: [3]u8 = switch (face.fg) {
         .rgb => |col| .{col.r, col.g, col.b},
         .name => |name| block: {
             var value: [3]u8 = .{0, 0, 0};
 
             if (name == .default) {
-                c.arcan_tui_get_color(tui.context, c.TUI_COL_TEXT, &value);
+                arcan.arcan_tui_get_color(tui.context, arcan.TUI_COL_TEXT, &value);
             } else {
-                const index = @as(u8, c.TUI_COL_TBASE) + (
+                const index = @as(u8, arcan.TUI_COL_TBASE) + (
                     @intFromEnum(name) - @intFromEnum(Parser.ColorName.black)
                 );
-                c.arcan_tui_get_color(tui.context, index, &value);
+                arcan.arcan_tui_get_color(tui.context, index, &value);
             }
 
             break :block value;
@@ -330,12 +330,12 @@ pub fn faceToScreenAttr(tui: *const TUI, face: Parser.Face) c.tui_screen_attr {
             var value: [3]u8 = .{0, 0, 0};
 
             if (name == .default) {
-                c.arcan_tui_get_bgcolor(tui.context, c.TUI_COL_BG, &value);
+                arcan.arcan_tui_get_bgcolor(tui.context, arcan.TUI_COL_BG, &value);
             } else {
-                const index = @as(u8, c.TUI_COL_TBASE) + (
+                const index = @as(u8, arcan.TUI_COL_TBASE) + (
                     @intFromEnum(name) - @intFromEnum(Parser.ColorName.black)
                 );
-                c.arcan_tui_get_color(tui.context, index, &value);
+                arcan.arcan_tui_get_color(tui.context, index, &value);
             }
 
             break :block value;

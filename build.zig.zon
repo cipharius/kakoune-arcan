@@ -1,12 +1,13 @@
 .{
-    .name = "kakoune-arcan",
+    .name = .kakoune_arcan,
+    .fingerprint = 0xa4baf5c07a23a3f4,
     .version = "0.0.1",
-    .minimum_zig_version = "0.13.0",
+    .minimum_zig_version = "0.15.2",
 
     .dependencies = .{
         .arcan = .{
-            .url = "https://arcan.tase.lv/tarball/cc955b5918/Arcan-cc955b5918.tar.gz",
-            .hash = "1220b4fdd669c8329ca0c3bf198dac8aff4549d1245e10e771d3e09cb927180128bd",
+            .url = "https://arcan.tase.lv/tarball/0e0ee250af/Arcan-0e0ee250af.tar.gz",
+            .hash = "arcan-0.7.2-7ERC6IAF3QBV-I8cH3y_wU43tcV24zJ7eAOjj2he2eTn",
         },
     },
 

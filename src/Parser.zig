@@ -162,22 +162,22 @@ pub fn nextBool(parser: *@This()) Error!bool {
 
 pub fn nextString(parser: *@This()) Error![]const u8 {
     const allocator = parser.arena.allocator();
-    var string = std.ArrayList(u8).init(allocator);
+    var string: std.ArrayList(u8) = .empty;
 
     while (true) {
         const token = try parser.nextToken();
         switch (token) {
-            .partial_string => |str| try string.appendSlice(str),
+            .partial_string => |str| try string.appendSlice(allocator, str),
             inline .partial_string_escaped_1,
             .partial_string_escaped_2,
             .partial_string_escaped_3,
             .partial_string_escaped_4,
-            => |bytes| try string.appendSlice(&bytes),
+            => |bytes| try string.appendSlice(allocator, &bytes),
             .string => |str| {
                 if (string.items.len == 0) {
                     return str;
                 } else {
-                    return string.toOwnedSlice();
+                    return string.toOwnedSlice(allocator);
                 }
             },
             else => return error.UnexpectedToken,
@@ -234,13 +234,13 @@ pub fn nextColor(parser: *@This()) Error!Color {
         }
     };
 
-    const rgb = .{
-        .r = std.fmt.parseInt(u8, hex[0..2], 16) catch return Error.ParseError,
-        .g = std.fmt.parseInt(u8, hex[2..4], 16) catch return Error.ParseError,
-        .b = std.fmt.parseInt(u8, hex[4..6], 16) catch return Error.ParseError,
+    return Color{
+        .rgb = .{
+            .r = std.fmt.parseInt(u8, hex[0..2], 16) catch return Error.ParseError,
+            .g = std.fmt.parseInt(u8, hex[2..4], 16) catch return Error.ParseError,
+            .b = std.fmt.parseInt(u8, hex[4..6], 16) catch return Error.ParseError,
+        },
     };
-
-    return Color{ .rgb = rgb };
 }
 
 test "nextColor" {
@@ -357,6 +357,7 @@ pub fn nextAtom(parser: *@This()) Error!Atom {
     ) {
         if (slice.len <= idx + 1) return Error.BadEscape;
 
+        std.log.debug("Escape: {s}", .{slice[idx + 1..][0..1]});
         switch (slice[idx + 1]) {
             '\\', '"', '/' => {
                 std.mem.copyForwards(u8, slice[idx..], slice[idx + 1..]);
@@ -412,7 +413,7 @@ pub fn nextLine(parser: *@This()) Error!Line {
     try parser.expectNextToken(.array_begin);
 
     const allocator = parser.arena.allocator();
-    var atoms = std.ArrayList(Atom).init(allocator);
+    var atoms: std.ArrayList(Atom) = .empty;
 
     while (true) {
         const atom = parser.nextAtom() catch |err| {
@@ -420,10 +421,10 @@ pub fn nextLine(parser: *@This()) Error!Line {
             if (parser.last_token.? != .array_end) return err;
             break;
         };
-        atoms.append(atom) catch return Error.OutOfMemory;
+        atoms.append(allocator, atom) catch return Error.OutOfMemory;
     }
 
-    return atoms.toOwnedSlice();
+    return atoms.toOwnedSlice(allocator);
 }
 
 test "nextLine" {
@@ -451,7 +452,7 @@ pub fn nextLines(parser: *@This()) Error![]Line {
     try parser.expectNextToken(.array_begin);
 
     const allocator = parser.arena.allocator();
-    var lines = std.ArrayList(Line).init(allocator);
+    var lines: std.ArrayList(Line) = .empty;
 
     while (true) {
         const line = parser.nextLine() catch |err| {
@@ -459,10 +460,10 @@ pub fn nextLines(parser: *@This()) Error![]Line {
             if (parser.last_token.? != .array_end) return err;
             break;
         };
-        lines.append(line) catch return Error.OutOfMemory;
+        lines.append(allocator, line) catch return Error.OutOfMemory;
     }
 
-    return lines.toOwnedSlice();
+    return lines.toOwnedSlice(allocator);
 }
 
 pub fn expectNextToken(parser: *@This(), comptime token: json.Token) Error!void {

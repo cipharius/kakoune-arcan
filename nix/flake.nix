@@ -8,19 +8,19 @@ rec {
     systems.url = "github:nix-systems/default";
 
     zig-x86_64-linux = {
-      url = "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz";
+      url = "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz";
       flake = false;
     };
     zig-aarch64-linux = {
-      url = "https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz";
+      url = "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz";
       flake = false;
     };
     zig-x86_64-darwin = {
-      url = "https://ziglang.org/download/0.13.0/zig-macos-x86_64-0.13.0.tar.xz";
+      url = "https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz";
       flake = false;
     };
     zig-aarch64-darwin = {
-      url = "https://ziglang.org/download/0.13.0/zig-macos-aarch64-0.13.0.tar.xz";
+      url = "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz";
       flake = false;
     };
   };
@@ -34,7 +34,7 @@ rec {
   in {
     devShell = eachSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      zig-version = "0.14.0";
+      zig-version = "0.15.2";
       zig-source = deriviations."zig-${system}".outPath;
       zig = pkgs.stdenv.mkDerivation rec {
         pname = "zig";

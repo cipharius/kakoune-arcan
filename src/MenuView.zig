@@ -1,7 +1,7 @@
 const std = @import("std");
+const arcan = @import("arcan");
 const Parser = @import("./Parser.zig");
-const TUI = @import("./TUI.zig");
-const c = @import("./c.zig");
+const Tui = @import("./Tui.zig");
 
 cursor: usize = 0,
 anchor: Parser.Coord = .{ .line = 0, .column = 0 },
@@ -15,22 +15,23 @@ active: bool = false,
 
 const MenuView = @This();
 
-pub fn init(allocator: std.mem.Allocator) MenuView {
+pub fn init() MenuView {
     return .{
-        .items = std.ArrayList([]Parser.Atom).init(allocator),
-        .atoms = std.ArrayList(Parser.Atom).init(allocator),
-        .string_buffer = std.ArrayList(u8).init(allocator),
+        .items = .empty,
+        .atoms = .empty,
+        .string_buffer = .empty,
     };
 }
 
-pub fn deinit(view: *MenuView) void {
-    view.items.deinit();
-    view.atoms.deinit();
-    view.string_buffer.deinit();
+pub fn deinit(view: *MenuView, allocator: std.mem.Allocator) void {
+    view.items.deinit(allocator);
+    view.atoms.deinit(allocator);
+    view.string_buffer.deinit(allocator);
 }
 
 pub fn update(
     view: *MenuView,
+    allocator: std.mem.Allocator,
     items: []const Parser.Line,
     anchor: Parser.Coord,
     selected_item_face: Parser.Face,
@@ -58,9 +59,9 @@ pub fn update(
         }
     }
 
-    try view.items.ensureTotalCapacity(items.len);
-    try view.atoms.ensureTotalCapacity(required_atoms);
-    try view.string_buffer.ensureTotalCapacity(required_bytes);
+    try view.items.ensureTotalCapacity(allocator, items.len);
+    try view.atoms.ensureTotalCapacity(allocator, required_atoms);
+    try view.string_buffer.ensureTotalCapacity(allocator, required_bytes);
 
     for (items) |item| {
         const l0 = view.atoms.items.len;
@@ -81,7 +82,7 @@ pub fn update(
     }
 }
 
-pub fn draw(view: *MenuView, tui: *TUI) void {
+pub fn draw(view: *MenuView, tui: *Tui) void {
     switch (view.style) {
         .prompt => view.drawPromptStyle(tui),
         .@"inline" => view.drawInlineStyle(tui),
@@ -90,13 +91,13 @@ pub fn draw(view: *MenuView, tui: *TUI) void {
     }
 }
 
-pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
+pub fn drawPromptStyle(view: *MenuView, tui: *Tui) void {
     const max_rows: usize = 10;
     if (!view.active) return;
 
     var rows: usize = 0;
     var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+    arcan.arcan_tui_dimensions(tui.context, &rows, &cols);
 
     const menu_rows = @min(
         view.items.items.len,
@@ -108,7 +109,7 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
     const x1: usize = cols - 1;
     const y1: usize = rows - 2;
 
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context, x0, y0, x1, y1,
         false, tui.faceToScreenAttr(view.menu_face)
     );
@@ -148,7 +149,7 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
             if (page_cursor + i == view.cursor) view.selected_item_face
             else view.menu_face;
 
-        c.arcan_tui_eraseattr_region(
+        arcan.arcan_tui_eraseattr_region(
             tui.context,
             x0 + column_width * column,
             y0 + row,
@@ -157,7 +158,7 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
             false, tui.faceToScreenAttr(face)
         );
 
-        c.arcan_tui_move_to(
+        arcan.arcan_tui_move_to(
             tui.context,
             x0 + column_width * column,
             y0 + row
@@ -175,7 +176,7 @@ pub fn drawPromptStyle(view: *MenuView, tui: *TUI) void {
     );
 }
 
-pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
+pub fn drawInlineStyle(view: *MenuView, tui: *Tui) void {
     const max_rows: usize = 10;
     if (!view.active) return;
 
@@ -191,7 +192,7 @@ pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
 
     var rows: usize = 0;
     var cols: usize = 0;
-    c.arcan_tui_dimensions(tui.context, &rows, &cols);
+    arcan.arcan_tui_dimensions(tui.context, &rows, &cols);
 
     const rows_above = view.anchor.line;
     const rows_below = (rows - 1) - (view.anchor.line + 1);
@@ -211,7 +212,7 @@ pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
     const y1: usize = if (place_below) view.anchor.line + menu_rows
                       else view.anchor.line - 1;
 
-    c.arcan_tui_eraseattr_region(
+    arcan.arcan_tui_eraseattr_region(
         tui.context, x0, y0, x1, y1,
         false, tui.faceToScreenAttr(view.menu_face)
     );
@@ -237,14 +238,14 @@ pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
             if (page_cursor + i == view.cursor) view.selected_item_face
             else view.menu_face;
 
-        c.arcan_tui_eraseattr_region(
+        arcan.arcan_tui_eraseattr_region(
             tui.context,
             x0, y0 + row,
             x1 - 1, y0 + row,
             false, tui.faceToScreenAttr(face)
         );
 
-        c.arcan_tui_move_to(tui.context, x0, y0 + row);
+        arcan.arcan_tui_move_to(tui.context, x0, y0 + row);
 
         tui.drawAtoms(item, face);
     }
@@ -260,7 +261,7 @@ pub fn drawInlineStyle(view: *MenuView, tui: *TUI) void {
 
 fn drawScrollbar(
     view: *MenuView,
-    tui: *TUI,
+    tui: *Tui,
     x: usize,
     y: usize,
     rows: usize,
@@ -295,12 +296,12 @@ fn drawScrollbar(
 
     var i: usize = 0;
     while (i < rows) : (i += 1) {
-        c.arcan_tui_move_to(tui.context, x, y + i);
+        arcan.arcan_tui_move_to(tui.context, x, y + i);
 
         const codepoint =
             if (i >= offset and i < offset+height) @as(u32, 9608) // #9608 = █
             else @as(u32, 9617); // #9617 = ░
 
-        c.arcan_tui_write(tui.context, codepoint, &face);
+        arcan.arcan_tui_write(tui.context, codepoint, &face);
     }
 }
